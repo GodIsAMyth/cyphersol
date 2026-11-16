@@ -356,12 +356,17 @@ class ProfileTests(unittest.TestCase):
 
 class SampleCaseRegressionTests(unittest.TestCase):
     def test_sample_case_scores_and_exports(self):
+        import shutil
         import tempfile
         from cyphersol.service import CypherApplicationService
 
         tmp = tempfile.mkdtemp(prefix="p1risk_", dir="/private/tmp/claude-501/cyphersol-p1") if os.path.isdir(
             "/private/tmp/claude-501/cyphersol-p1") else tempfile.mkdtemp()
-        svc = CypherApplicationService(os.path.join(tmp, "v.db"), os.path.join(ROOT_DIR, "sample_statements"), seed_demo=True)
+        self.addCleanup(shutil.rmtree, tmp, True)
+        # Seed from a copy: demo seeding regenerates sample files, which must not rewrite the repo's sample_statements.
+        samples = os.path.join(tmp, "sample_statements")
+        shutil.copytree(os.path.join(ROOT_DIR, "sample_statements"), samples)
+        svc = CypherApplicationService(os.path.join(tmp, "v.db"), samples, seed_demo=True)
         mules = svc.get_mule_assessments("CASE_TRACE_EOW_041")
         ramesh = next(m for m in mules if "RAMESH" in m["account_holder_name"].upper())
         self.assertGreaterEqual(ramesh["composite_score"], 80.0)
