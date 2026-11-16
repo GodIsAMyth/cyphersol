@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="cyphersol-token" content="__CYPHERSOL_TOKEN__" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="referrer" content="no-referrer" />
+  <title>CypherSOL</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <script src="js/core/theme-init.js"></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <div id="cloud-ai-banner" class="cloud-banner" role="status" aria-live="polite" hidden>
+    <strong>Cloud AI enabled:</strong>
+    <span id="cloud-ai-banner-detail">statement content may be sent to an external AI provider.</span>
+  </div>
+
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Workspace">
+      <div class="sidebar__brand">
+        <span class="brand-mark" aria-hidden="true">CS</span>
+        <span class="brand-text">
+          <span class="brand-name">CypherSOL</span><br />
+          <span class="brand-sub">Edge &amp; Trace intelligence</span>
+        </span>
+        <button type="button" class="btn btn--ghost btn--icon btn--sm sidebar__collapse" id="btn-collapse" aria-label="Collapse sidebar" aria-pressed="false"></button>
+      </div>
+      <div class="sidebar__case" id="case-switcher-slot"></div>
+      <nav class="sidebar__nav" id="sidebar-nav" aria-label="Workspace views"></nav>
+      <div class="sidebar__foot" id="sidebar-foot"></div>
+    </aside>
+    <div class="sidebar-scrim" id="sidebar-scrim" aria-hidden="true"></div>
+
+    <div class="app__main-col">
+      <header class="topbar" id="topbar">
+        <button type="button" class="btn btn--ghost btn--icon topbar__menu" id="btn-drawer" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false"></button>
+        <nav class="breadcrumbs" id="breadcrumbs" aria-label="Breadcrumb"></nav>
+        <div class="topbar__actions" id="topbar-actions"></div>
+      </header>
+      <main class="main" id="main" tabindex="-1">
+        <div class="boot-splash" id="boot-splash">Loading CypherSOL…</div>
+      </main>
+    </div>
+  </div>
+
+  <div id="sr-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-relevant="additions"></div>
+
+  <noscript><div class="noscript">CypherSOL needs JavaScript enabled to run its local analysis interface.</div></noscript>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "PDF28_NIKHIL-JOSHI_SBI_38291045771.pdf": {
+    "account_number": "38291045771",
+    "bank_code": "SBI",
+    "closing_balance": "186809.52",
+    "min_pages": 2,
+    "opening_balance": "50000.00",
+    "producer": "Quartz PDFContext (cupsfilter)",
+    "rows": 140,
+    "total_credit": "3293367.75",
+    "total_debit": "3156558.23"
+  },
+  "PDF28_POOJAN-VIG_HDFC_501002938471.pdf": {
+    "account_number": "501002938471",
+    "bank_code": "HDFC",
+    "closing_balance": "53700.00",
+    "opening_balance": "1000.00",
+    "producer": "Quartz PDFContext (cupsfilter)",
+    "rows": 8,
+    "total_credit": "250300.00",
+    "total_debit": "197600.00"
+  }
+}

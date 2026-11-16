@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyphersol"
+version = "1.0.0"
+description = "Offline-First Unified Bank Statement Analyzer (CypherEdge) & Forensic Fund Trail Intelligence Platform (CypherTrace)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+accelerators = [
+    "PyMuPDF>=1.24.0",
+    "pdfplumber>=0.11.0",
+    "pikepdf>=9.0.0",
+    "openpyxl>=3.1.2",
+    "xlrd>=2.0.1",
+    "polars>=1.0.0",
+    "rapidfuzz>=3.9.0",
+    "networkx>=3.3",
+    "lightgbm>=4.3.0",
+    "scikit-learn>=1.5.0",
+    "duckdb>=1.0.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "pydantic>=2.7.0",
+]
+
+[project.scripts]
+cyphersol = "cyphersol.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

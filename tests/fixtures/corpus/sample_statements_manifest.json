@@ -1,0 +1,159 @@
+{
+  "CA2025_SHREE-BALAJI-ENTERPRISES_SBI_382910445566.pdf": {
+    "account_number": "382910445566",
+    "balance_mismatch_rows": [],
+    "bank_code": "SBI",
+    "closing_balance": "889960.00",
+    "opening_balance": "125000.00",
+    "period": [
+      "2025-04-01",
+      "2025-06-30"
+    ],
+    "rows": 24,
+    "total_credit": "1587450.00",
+    "total_debit": "822490.00"
+  },
+  "CASE041_APEX-SHELL-PVT-LTD_INDUS_201009988776.csv": {
+    "account_number": "201009988776",
+    "balance_mismatch_rows": [
+      2
+    ],
+    "bank_code": "INDUS",
+    "closing_balance": "430000.00",
+    "opening_balance": "2000.00",
+    "period": [
+      "2026-04-02",
+      "2026-04-17"
+    ],
+    "rows": 4,
+    "total_credit": "620000.00",
+    "total_debit": "682000.00"
+  },
+  "CASE041_AYAZ-QURESHI_SBI_30112233445.csv": {
+    "account_number": "30112233445",
+    "balance_mismatch_rows": [],
+    "bank_code": "SBI",
+    "closing_balance": "9500.00",
+    "opening_balance": "5000.00",
+    "period": [
+      "2026-04-01",
+      "2026-04-01"
+    ],
+    "rows": 3,
+    "total_credit": "5000.00",
+    "total_debit": "500.00"
+  },
+  "CASE041_DEEP-PATANGE_ICICI_000401992831.csv": {
+    "account_number": "000401992831",
+    "balance_mismatch_rows": [],
+    "bank_code": "ICICI",
+    "closing_balance": "24800.00",
+    "opening_balance": "1000.00",
+    "period": [
+      "2026-04-01",
+      "2026-04-18"
+    ],
+    "rows": 4,
+    "total_credit": "25200.00",
+    "total_debit": "1400.00"
+  },
+  "CASE041_HAWALA-TRADERS_AXIS_990011223344.xlsx": {
+    "account_number": "990011223344",
+    "balance_mismatch_rows": [],
+    "bank_code": "AXIS",
+    "closing_balance": "400000.00",
+    "opening_balance": "5000.00",
+    "period": [
+      "2026-04-02",
+      "2026-04-04"
+    ],
+    "rows": 4,
+    "total_credit": "875000.00",
+    "total_debit": "480000.00"
+  },
+  "CASE041_IMRAN-SABLE_AXIS_918010044221.csv": {
+    "account_number": "918010044221",
+    "balance_mismatch_rows": [],
+    "bank_code": "AXIS",
+    "closing_balance": "800.00",
+    "opening_balance": "800.00",
+    "period": [
+      "2026-04-01",
+      "2026-04-02"
+    ],
+    "rows": 2,
+    "total_credit": "100.00",
+    "total_debit": "100.00"
+  },
+  "CASE041_MANISH-PATIL_SBI_30981234001.csv": {
+    "account_number": "30981234001",
+    "balance_mismatch_rows": [],
+    "bank_code": "SBI",
+    "closing_balance": "2020.00",
+    "opening_balance": "2000.00",
+    "period": [
+      "2026-04-01",
+      "2026-04-02"
+    ],
+    "rows": 2,
+    "total_credit": "200.00",
+    "total_debit": "180.00"
+  },
+  "CASE041_POOJAN-VIG_HDFC_501002938471.pdf": {
+    "account_number": "501002938471",
+    "balance_mismatch_rows": [],
+    "bank_code": "HDFC",
+    "closing_balance": "53700.00",
+    "opening_balance": "1000.00",
+    "period": [
+      "2026-04-01",
+      "2026-04-30"
+    ],
+    "rows": 8,
+    "total_credit": "250300.00",
+    "total_debit": "197600.00"
+  },
+  "CASE041_RAMESH-KUMAR-MULE_PNB_440011998877.csv": {
+    "account_number": "440011998877",
+    "balance_mismatch_rows": [],
+    "bank_code": "PNB",
+    "closing_balance": "325.00",
+    "opening_balance": "500.00",
+    "period": [
+      "2026-02-15",
+      "2026-04-10"
+    ],
+    "rows": 17,
+    "total_credit": "736025.00",
+    "total_debit": "736200.00"
+  },
+  "CASE041_SAMIDA-DEVKAR_KOTAK_7711882201.csv": {
+    "account_number": "7711882201",
+    "balance_mismatch_rows": [],
+    "bank_code": "KOTAK",
+    "closing_balance": "1550.00",
+    "opening_balance": "1500.00",
+    "period": [
+      "2026-04-01",
+      "2026-04-02"
+    ],
+    "rows": 2,
+    "total_credit": "200.00",
+    "total_debit": "150.00"
+  },
+  "CASE041_ZENITH-CONSULTANTS_YES_001980077665.csv": {
+    "account_number": "001980077665",
+    "balance_mismatch_rows": [],
+    "bank_code": "YES",
+    "closing_balance": "10000.00",
+    "opening_balance": "3000.00",
+    "period": [
+      "2026-04-02",
+      "2026-04-03"
+    ],
+    "rows": 2,
+    "total_credit": "432000.00",
+    "total_debit": "425000.00"
+  },
+  "_note": "Golden expectations for sample_statements/ (ING-25). The only accepted mismatch is APEX row index 2 (row 3): a genuine source-data error (10,000 - 250,000 cannot leave 250,000)."
+}

@@ -1,0 +1,269 @@
+/* CypherEdge views: Tally (.v-tally), ITR (.v-itr), Loan (.v-loan). Tokens only; no hex. */
+
+/* ============================================================ Tally */
+.v-tally .v-tally-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-6);
+}
+.v-tally .v-tally-opt { display: flex; align-items: flex-start; gap: var(--sp-2); min-width: 0; flex: 1 1 260px; }
+.v-tally .v-tally-opt .switch { margin-top: 2px; }
+.v-tally .v-tally-opt__text { display: flex; flex-direction: column; gap: 2px; cursor: pointer; min-width: 0; }
+.v-tally .v-tally-company { flex: 1 1 220px; max-width: 320px; margin: 0; }
+.v-tally .v-tally-narr {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: normal;
+  line-height: 1.35;
+}
+.v-tally .v-tally-xmlmeta { grid-template-columns: max-content minmax(0, 1fr); min-width: 0; flex: 1 1 320px; }
+.v-tally .v-tally-xml { max-height: min(60vh, 560px); }
+
+/* push dialog (rendered in a <dialog> outside .v-tally; classes are view-prefixed) */
+.v-tally-push-grid { grid-template-columns: minmax(0, 2fr) minmax(90px, 1fr); }
+.v-tally-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: var(--sp-2);
+}
+.v-tally-count {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.v-tally-count .strong { font-size: var(--fs-lg); }
+.v-tally-count.is-bad { border-color: var(--danger); background: var(--danger-bg); }
+.v-tally-count.is-bad .strong { color: var(--danger-text); }
+.v-tally-lineerrors summary { cursor: pointer; }
+.v-tally-lineerrors__list {
+  max-height: 200px;
+  overflow: auto;
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-6);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.v-tally-lineerrors__list li + li { margin-top: var(--sp-1); }
+
+@media (max-width: 480px) {
+  .v-tally-push-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================ ITR */
+.v-itr .v-itr-fy { margin: 0; }
+.v-itr .v-itr-fy .select { min-width: 140px; }
+.v-itr .v-itr-checks { list-style: none; margin: 0; padding: 0; }
+.v-itr .v-itr-check {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) minmax(110px, max-content);
+  gap: var(--sp-2) var(--sp-4);
+  align-items: start;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border-1);
+  border-left: 3px solid transparent;
+}
+.v-itr .v-itr-check:first-child { border-top: 0; }
+.v-itr .v-itr-check[data-status="flag"] { border-left-color: var(--danger); }
+.v-itr .v-itr-check[data-status="verify"] { border-left-color: var(--warn); }
+.v-itr .v-itr-check[data-status="pass"] { border-left-color: var(--success); }
+.v-itr .v-itr-check__main { display: flex; flex-direction: column; gap: var(--sp-1); }
+.v-itr .v-itr-check__title { line-height: 1.35; }
+.v-itr .v-itr-check__amt { padding-top: 2px; font-weight: var(--fw-semibold); white-space: nowrap; }
+.v-itr .v-itr-flag {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.v-itr .v-itr-flag__detail { margin: 0; }
+.v-itr .v-itr-details summary { cursor: pointer; color: var(--text-link); width: max-content; }
+.v-itr .v-itr-details .table-wrap { margin-top: var(--sp-2); max-height: 320px; }
+.v-itr .v-itr-meters { display: grid; gap: var(--sp-2); margin-top: var(--sp-1); max-width: 560px; }
+.v-itr .v-itr-meter { display: flex; flex-direction: column; gap: var(--sp-1); }
+.v-itr .v-itr-meter .row-between { gap: var(--sp-2); flex-wrap: wrap; }
+.v-itr .v-itr-total th, .v-itr .v-itr-total td { border-top: 2px solid var(--border-strong); background: var(--surface-2); }
+.v-itr .v-itr-cols { align-items: start; }
+
+@media (max-width: 640px) {
+  .v-itr .v-itr-check { grid-template-columns: minmax(0, 1fr) max-content; padding: var(--sp-3); }
+  .v-itr .v-itr-check__status { grid-column: 1; }
+  .v-itr .v-itr-check__amt { grid-column: 2; grid-row: 1; }
+  .v-itr .v-itr-check__main { grid-column: 1 / -1; }
+}
+
+/* ============================================================ Loan */
+.v-loan .v-loan-form__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: var(--sp-3);
+  align-items: end;
+}
+.v-loan .v-loan-form .field { margin: 0; }
+.v-loan .v-loan-form__actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.v-loan .v-loan-form .field__error:empty { display: none; }
+
+/* FOIR bar: used | headroom, with a cap marker */
+.v-loan .v-loan-foir__track {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  border-radius: var(--r-full);
+  background: var(--surface-3);
+  overflow: visible;
+}
+.v-loan .v-loan-foir__used,
+.v-loan .v-loan-foir__room { height: 100%; width: var(--w, 0%); flex: none; }
+.v-loan .v-loan-foir__used { background: var(--chart-2); border-radius: var(--r-full) 0 0 var(--r-full); }
+.v-loan .v-loan-foir__room { background: var(--chart-1); opacity: 0.45; }
+.v-loan .v-loan-foir__used + .v-loan-foir__room:last-of-type { border-radius: 0 var(--r-full) var(--r-full) 0; }
+.v-loan .v-loan-foir__cap {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: var(--x, 0%);
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text-1);
+  border-radius: 1px;
+}
+.v-loan-sw-used { --swatch: var(--chart-2); }
+.v-loan-sw-room { --swatch: var(--chart-1); opacity: 0.6; }
+.v-loan-sw-cap { display: inline-block; width: 2px; height: 12px; background: var(--text-1); border-radius: 1px; }
+.v-loan-sw-abb { --swatch: var(--chart-1); }
+.v-loan-sw-fixed { --swatch: var(--chart-2); }
+.v-loan-sw-band { --swatch: var(--chart-1); opacity: 0.25; }
+
+/* chart */
+.v-loan .v-loan-chart { width: 100%; min-width: 0; min-height: 220px; }
+.v-loan .v-loan-svg { display: block; max-width: 100%; height: auto; overflow: visible; border-radius: var(--r-sm); }
+.v-loan .v-loan-svg:focus-visible { outline: var(--focus-width, 2px) solid var(--focus-ring); outline-offset: 2px; }
+.v-loan .v-loan-tick { font-size: 11px; font-variant-numeric: tabular-nums; }
+.v-loan .v-loan-direct { font-size: 11px; font-weight: var(--fw-medium); font-variant-numeric: tabular-nums; }
+.v-loan .v-loan-band { fill: var(--chart-1); fill-opacity: 0.12; stroke: none; }
+.v-loan .v-loan-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.v-loan .v-loan-line--abb { stroke: var(--chart-1); }
+.v-loan .v-loan-line--fixed { stroke: var(--chart-2); stroke-dasharray: 5 4; }
+.v-loan .v-loan-dot--abb { fill: var(--chart-1); stroke: var(--chart-surface); stroke-width: 2; }
+.v-loan .v-loan-cross { stroke: var(--chart-axis); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.v-loan .v-loan-hit { fill: transparent; cursor: crosshair; }
+
+.v-loan-tip { min-width: 200px; }
+.v-loan-tip[hidden] { display: none; }
+.v-loan-tip__kv {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  gap: 2px var(--sp-3);
+  margin: var(--sp-1) 0 0;
+}
+.v-loan-tip__kv dt { display: inline-flex; align-items: center; gap: var(--sp-1); opacity: 0.8; }
+.v-loan-tip__kv dd { margin: 0; text-align: right; }
+.v-loan-key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--swatch); }
+
+.v-loan .v-loan-table th[scope="row"] { font-weight: var(--fw-semibold); }
+.v-loan .v-loan-total th, .v-loan .v-loan-total td { border-top: 2px solid var(--border-strong); background: var(--surface-2); }
+.v-loan .v-loan-details { padding: var(--sp-2) var(--sp-3) var(--sp-3); border-top: 1px solid var(--border-1); }
+.v-loan .v-loan-details summary { cursor: pointer; color: var(--text-link); width: max-content; }
+.v-loan .v-loan-details .table-wrap { margin-top: var(--sp-2); }
+.v-loan .v-loan-note { margin: 0; padding: var(--sp-2) var(--sp-3); }
+.v-loan .v-loan-cols { align-items: start; }
+
+@media (forced-colors: active) {
+  .v-loan .v-loan-line--abb, .v-loan .v-loan-line--fixed { stroke: CanvasText; }
+  .v-loan .v-loan-foir__used, .v-loan .v-loan-foir__room { background: Highlight; }
+}
+
+/* row headers inside static tables read as cells, not as sticky column headers */
+.v-loan .table tbody th, .v-itr .table tbody th {
+  position: static;
+  background: transparent;
+  color: var(--text-1);
+  font-size: var(--fs-sm);
+}
+.v-loan .v-loan-total th, .v-itr .v-itr-total th { background: var(--surface-2); }
+.v-loan .v-loan-series { margin: 0; min-width: 0; }
+.v-loan .v-loan-series .select { max-width: 260px; }
+
+/* ============================================================ Tally (P1): ledger map editor (in a <dialog>, so unscoped but view-prefixed) */
+.v-tally-map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: var(--sp-2) var(--sp-3);
+  align-items: end;
+  padding: var(--sp-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.v-tally-map-row--cp { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) auto; }
+.v-tally-map-row .field { margin: 0; min-width: 0; }
+@media (max-width: 640px) {
+  .v-tally-map-row, .v-tally-map-row--cp { grid-template-columns: minmax(0, 1fr); }
+}
+.v-tally-map-checks {
+  display: grid;
+  gap: var(--sp-1) var(--sp-3);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--sp-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+}
+.v-tally-map-check { align-self: end; min-height: var(--control-h); }
+.v-tally-map-table .select, .v-tally-map-table .input { width: 100%; min-width: 160px; }
+.v-tally .v-tally-mapnote { gap: var(--sp-2); align-items: center; justify-content: space-between; flex: 1 1 auto; }
+
+/* ============================================================ ITR (P1): checks_run groups, thresholds, waterfall, deductions */
+.v-itr .v-itr-group { margin: 0; padding: var(--sp-3) var(--sp-4) var(--sp-1); border-top: 1px solid var(--border-1); }
+.v-itr .v-itr-group:first-child { border-top: 0; }
+.v-itr .v-itr-check[data-status="no_data"] { border-left-color: var(--border-strong); }
+.v-itr .v-itr-thresholds { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.v-itr .v-itr-caveats { margin: 0; padding-left: var(--sp-4); color: var(--text-3); }
+.v-itr .v-itr-wf__barcol { width: 40%; min-width: 120px; }
+.v-itr .v-itr-wf__track { position: relative; display: block; height: 10px; border-radius: var(--r-xs); background: var(--surface-sunken); }
+.v-itr .v-itr-wf__bar {
+  position: absolute; top: 0; bottom: 0;
+  left: var(--x0, 0%); width: max(2px, var(--w, 0%));
+  border-radius: var(--r-xs); background: var(--chart-1);
+}
+.v-itr .v-itr-wf__row--less .v-itr-wf__bar { background: var(--text-3); }
+.v-itr .v-itr-wf__row--head .v-itr-wf__bar { background: var(--chart-6); }
+.v-itr .v-itr-wf__row--subtotal .v-itr-wf__bar { background: var(--chart-7); }
+.v-itr .v-itr-wf__row--unexplained .v-itr-wf__bar { background: var(--risk-suspicious); }
+.v-itr .v-itr-wf__row--subtotal th, .v-itr .v-itr-wf__row--subtotal td { border-top: 2px solid var(--border-strong); background: var(--surface-2); }
+.v-itr .v-itr-wf__row.is-zero .v-itr-wf__bar { display: none; }
+.v-itr .v-itr-wf__row.is-zero th { color: var(--text-3); }
+.v-itr .v-itr-dedtx { margin: var(--sp-1) 0 0; padding-left: var(--sp-4); color: var(--text-2); overflow-wrap: anywhere; }
+
+/* ============================================================ Loan (P1): coverage strip, income basis, penal events */
+.v-loan .v-loan-cov {
+  display: flex;
+  height: 14px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-1);
+}
+.v-loan .v-loan-cov__seg { flex: 0 0 var(--seg-w, 0%); min-width: 2px; }
+.v-loan .v-loan-cov__seg + .v-loan-cov__seg { border-left: 1px solid var(--surface-1); }
+.v-loan .v-loan-cov__seg--full, .v-loan .v-loan-sw-full { background: var(--chart-6); --swatch: var(--chart-6); }
+.v-loan .v-loan-cov__seg--partial, .v-loan .v-loan-sw-partial { background: var(--chart-4); --swatch: var(--chart-4); }
+.v-loan .v-loan-cov__seg--none, .v-loan .v-loan-sw-none { background: var(--text-3); --swatch: var(--text-3); }
+.v-loan .v-loan-income th { font-weight: var(--fw-regular); }

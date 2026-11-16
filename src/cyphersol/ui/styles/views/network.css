@@ -1,0 +1,164 @@
+/* CypherTrace network graph view (.v-network). The bidirectional view has its own bidirectional.css.
+ * Tokens only — no hard-coded colours. */
+
+/* ===== Network: filters + time brush =================================================================== */
+.v-network .v-network-filter-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: var(--sp-3);
+  align-items: end;
+}
+@media (min-width: 900px) {
+  .v-network .v-network-f-q { grid-column: span 2; }
+}
+.v-network .v-network-filter-actions { display: flex; gap: var(--sp-2); }
+.v-network .v-network-time { display: flex; flex-direction: column; gap: var(--sp-1-5); min-width: 0; }
+.v-network .v-network-time__head { gap: var(--sp-2); }
+.v-network .v-network-dates { gap: var(--sp-2); }
+.v-network .v-network-dates .input { width: auto; min-width: 0; }
+.v-network .v-network-brush { width: 100%; min-width: 0; height: 64px; }
+.v-network-brush__svg { display: block; width: 100%; height: 64px; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; overflow: visible; }
+.v-network-brush__bg { fill: var(--surface-sunken); }
+.v-network-brush__bar { fill: var(--chart-seq-3); }
+.v-network-brush__bar.is-in { fill: var(--chart-1); }
+.v-network-brush__shade { fill: var(--surface-1); opacity: 0.55; pointer-events: none; }
+.v-network-brush__sel { fill: transparent; stroke: none; }
+.v-network-brush__sel.is-active { fill: var(--accent); fill-opacity: 0.12; stroke: var(--accent); stroke-width: 1; cursor: grab; }
+.v-network-brush__grip { fill: var(--surface-1); stroke: var(--accent); stroke-width: 1.5; cursor: ew-resize; }
+.v-network-brush__grip-line { stroke: var(--accent); stroke-width: 1; pointer-events: none; }
+.v-network-brush__handle { outline: none; }
+.v-network-brush__handle:focus-visible .v-network-brush__grip { stroke: var(--focus-ring); stroke-width: 3; }
+.v-network-brush__tick { font-size: var(--fs-2xs); pointer-events: none; }
+
+/* ===== Network: layout, canvas frame, overlay =========================================================== */
+.v-network .v-network-layout { display: grid; gap: var(--sp-4); grid-template-columns: minmax(0, 1fr); align-items: start; }
+@media (min-width: 1100px) {
+  .v-network .v-network-layout { grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); }
+  .v-network .v-network-inspector {
+    position: sticky;
+    top: calc(var(--topbar-h, 52px) + var(--sp-4));
+    max-height: calc(100vh - var(--topbar-h, 52px) - var(--sp-8));
+    overflow: auto;
+  }
+}
+.v-network .v-network-toolbar { gap: var(--sp-2); }
+.v-network .v-network-status { min-width: 0; }
+.v-network .v-network-frame {
+  position: relative;
+  height: clamp(360px, 62vh, 720px);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--chart-surface);
+}
+@media (max-width: 767.98px) {
+  .v-network .v-network-frame { height: 420px; }
+}
+.v-network .v-network-frame:has(.v-network-canvas:focus-visible) { outline: var(--focus-width, 2px) solid var(--focus-ring); outline-offset: 2px; }
+.v-network .v-network-frame[aria-busy="true"] .v-network-stage { opacity: 0.55; transition: opacity var(--dur-fast, 0.15s); }
+.v-network .v-network-stage { position: absolute; inset: 0; }
+.v-network-canvas { display: block; touch-action: none; outline: none; }
+.v-network .v-network-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--surface-1);
+}
+.v-network .v-network-overlay[hidden] { display: none; }
+.v-network .v-network-overlay__box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 440px;
+  padding: var(--sp-4);
+  color: var(--text-2);
+  text-align: center;
+}
+.v-network .v-network-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1-5) var(--sp-2);
+  border-radius: var(--r-md);
+  background: var(--info-bg);
+  color: var(--info-text);
+  font-size: var(--fs-xs);
+}
+.v-network .v-network-cap > span { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.v-network .v-network-foot { gap: var(--sp-2) var(--sp-4); align-items: flex-start; }
+.v-network .v-network-help { margin: 0; max-width: 62ch; }
+
+/* legend keys */
+.v-network-ramp { display: inline-flex; margin: 0 var(--sp-1); border-radius: 2px; overflow: hidden; }
+.v-network-ramp__step { width: 14px; height: 10px; background: var(--swatch); }
+.v-network-seq-2 { --swatch: var(--chart-seq-2); }
+.v-network-seq-3 { --swatch: var(--chart-seq-3); }
+.v-network-seq-4 { --swatch: var(--chart-seq-4); }
+.v-network-seq-5 { --swatch: var(--chart-seq-5); }
+.v-network-seq-6 { --swatch: var(--chart-seq-6); }
+.v-network-seq-7 { --swatch: var(--chart-seq-7); }
+.v-network-key { display: inline-block; flex: none; width: 10px; height: 10px; }
+.v-network-key--ring { border-radius: 50%; border: 2.5px solid var(--node-details); background: var(--surface-1); }
+.v-network-key--diamond { width: 8px; height: 8px; margin: 0 1px; transform: rotate(45deg); background: var(--node-system); }
+.v-network-key--edge { width: 18px; height: 0; border-top: 3px solid var(--edge-muted); border-radius: 2px; }
+
+/* ===== Network: inspector ============================================================================== */
+.v-network .v-network-role { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.v-network .v-network-insp-title { overflow-wrap: anywhere; }
+.v-network .v-network-kv, .v-network-drawer-kv { grid-template-columns: minmax(96px, max-content) 1fr; }
+.v-network-kv dd.num { text-align: right; font-variant-numeric: tabular-nums; }
+.v-network-cplist { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.v-network-cp {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 34px 20px;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+.v-network-cp .num { text-align: right; }
+.v-network-cp__name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1-5);
+  min-width: 0;
+  margin-left: calc(-1 * var(--sp-1));
+  padding: 2px var(--sp-1);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.v-network-cp__name:hover { background: var(--surface-2); }
+.v-network-cp__pair { color: var(--accent-text); text-align: center; text-decoration: none; font-weight: var(--fw-semibold); }
+.v-network-cp__pair:hover { text-decoration: underline; }
+.v-network-ki { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.v-network-ki__btn {
+  display: grid;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: var(--sp-1-5) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.v-network-ki__btn:hover { background: var(--surface-2); }
+.v-network-ki__btn .row { gap: var(--sp-1-5); }
+.v-network-ki__btn .meter { display: block; height: 4px; }
+
+/* ===== Network: P1 colour-by swatches for the server's betweenness bins (summary.colour_by.betweenness) ===== */
+.v-network .sw-seq-1 { --swatch: var(--chart-seq-1); }
+.v-network .sw-seq-3 { --swatch: var(--chart-seq-3); }
+.v-network .sw-seq-4 { --swatch: var(--chart-seq-4); }
+.v-network .sw-seq-6 { --swatch: var(--chart-seq-6); }
+.v-network .sw-seq-7 { --swatch: var(--chart-seq-7); }

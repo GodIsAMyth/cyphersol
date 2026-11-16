@@ -1,0 +1,213 @@
+/* Risk views: mules, profile, entities + the shared bar charts in js/charts/bars.js.
+ * Chart classes use the "v-risk-" prefix and are scoped to the three view roots and their drawers
+ * (drawers are appended to <body>, so they carry their own v-<view>-drawer class). Tokens only — no hex. */
+
+/* ===== shared chart pieces ========================================================================== */
+:is(.v-mules, .v-profile, .v-entities, .v-mules-drawer, .v-entities-drawer) .v-risk-bars__bg { fill: var(--surface-3); }
+
+/* Waterfall: label | track | value, one row per parameter */
+:is(.v-mules, .v-profile) .v-risk-wf {
+  display: grid;
+  grid-template-columns: minmax(96px, 11rem) minmax(0, 1fr) 3.25rem;
+  column-gap: var(--sp-3);
+  row-gap: 3px;
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+:is(.v-mules, .v-profile) .v-risk-wf__head,
+:is(.v-mules, .v-profile) .v-risk-wf__row { display: contents; }
+:is(.v-mules, .v-profile) .v-risk-wf__head > span {
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-bottom: 2px;
+}
+:is(.v-mules, .v-profile) .v-risk-wf__scale { position: relative; height: 1.2em; }
+:is(.v-mules, .v-profile) .v-risk-wf__scale > span { position: absolute; transform: translateX(-50%); }
+:is(.v-mules, .v-profile) .v-risk-wf__scale > span:nth-child(1) { left: 0; transform: none; }
+:is(.v-mules, .v-profile) .v-risk-wf__scale > span:nth-child(2) { left: 50%; }
+:is(.v-mules, .v-profile) .v-risk-wf__scale > span:nth-child(3) { left: 80%; }
+:is(.v-mules, .v-profile) .v-risk-wf__scale > span:nth-child(4) { right: 0; left: auto; transform: none; }
+:is(.v-mules, .v-profile) .v-risk-wf__label { align-self: center; min-width: 0; color: var(--text-2); }
+:is(.v-mules, .v-profile) .v-risk-wf__val { align-self: center; text-align: right; font-variant-numeric: tabular-nums; }
+:is(.v-mules, .v-profile) .v-risk-wf__track { width: 100%; height: 18px; display: block; align-self: center; overflow: visible; }
+:is(.v-mules, .v-profile) .v-risk-wf__room { fill: var(--surface-3); }
+:is(.v-mules, .v-profile) .v-risk-wf__step { fill: var(--chart-1); }
+:is(.v-mules, .v-profile) .v-risk-wf__guide { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 2 2; }
+:is(.v-mules, .v-profile) .v-risk-wf__thr { stroke: var(--text-2); stroke-width: 1.5; }
+:is(.v-mules, .v-profile) .v-risk-wf__row--total > * { padding-top: var(--sp-2); border-top: 1px solid var(--border-1); margin-top: var(--sp-1); }
+:is(.v-mules, .v-profile) .v-risk-wf__row--total .v-risk-wf__track { height: 22px; box-sizing: content-box; }
+:is(.v-mules, .v-profile) .v-risk-wf--compact { font-size: var(--fs-xs); grid-template-columns: minmax(84px, 9.5rem) minmax(0, 1fr) 2.75rem; }
+:is(.v-mules, .v-profile) .v-risk-wf--compact .v-risk-wf__track { height: 14px; }
+
+/* Bar list: label / value on one line, bar underneath */
+:is(.v-profile, .v-mules) .v-risk-bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2-5, 10px); }
+:is(.v-profile, .v-mules) .v-risk-bars__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "label val" "track track";
+  column-gap: var(--sp-3);
+  row-gap: 4px;
+  font-size: var(--fs-sm);
+}
+:is(.v-profile, .v-mules) .v-risk-bars__label { grid-area: label; display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
+:is(.v-profile, .v-mules) .v-risk-bars__sub { color: var(--text-3); font-size: var(--fs-xs); flex: none; }
+:is(.v-profile, .v-mules) .v-risk-bars__val { grid-area: val; font-weight: var(--fw-medium); }
+:is(.v-profile, .v-mules) .v-risk-bars__track { grid-area: track; width: 100%; height: 8px; display: block; border-radius: var(--r-xs); }
+
+/* Monthly chart */
+.v-profile .v-profile-chart { width: 100%; min-height: 220px; position: relative; }
+.v-profile .v-risk-chart { display: block; max-width: 100%; overflow: visible; }
+.v-profile .v-risk-chart__tick { font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.v-profile .v-risk-chart__hit { fill: transparent; }
+.v-profile .v-risk-chart__col.is-hot .v-risk-chart__hit { fill: var(--surface-2); }
+.v-profile .v-risk-chart__net { stroke: var(--chart-line-3); stroke-width: 2; stroke-linejoin: round; pointer-events: none; }
+.v-profile .v-risk-chart__netpt { fill: var(--chart-surface); stroke: var(--chart-line-3); stroke-width: 2; pointer-events: none; }
+.v-profile .v-risk-legend-line { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--chart-line-3); }
+.v-risk-tip { pointer-events: none; font-variant-numeric: tabular-nums; }
+
+/* ===== mules ========================================================================================= */
+.v-mules .v-mules-score { display: inline-flex; align-items: center; gap: var(--sp-2); width: 100%; }
+.v-mules .v-mules-score__bar { flex: 1 1 auto; min-width: 40px; height: 6px; border-radius: var(--r-full); }
+.v-mules .v-mules-score .num { min-width: 2.6em; text-align: right; }
+.v-mules .dg__td.v-mules-sel { background: var(--accent-bg); }
+.v-mules .dg__td.v-mules-sel:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+.v-mules .v-mules-detail__head { align-items: center; }
+.v-mules .v-mules-headline { display: flex; align-items: center; gap: var(--sp-3); flex: none; }
+.v-mules .v-mules-big { font-size: var(--fs-3xl); font-weight: var(--fw-semibold); letter-spacing: -0.02em; line-height: 1; }
+.v-mules .v-mules-big[data-tier="critical"] { color: var(--risk-critical-text); }
+.v-mules .v-mules-big[data-tier="suspicious"] { color: var(--risk-suspicious-text); }
+.v-mules .v-mules-big[data-tier="low"] { color: var(--risk-low-text); }
+.v-mules .v-mules-big__of { font-size: var(--fs-sm); color: var(--text-3); font-weight: var(--fw-regular, 400); margin-left: 2px; }
+.v-mules .v-mules-explain {
+  display: grid;
+  gap: var(--sp-6);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  align-items: start;
+}
+.v-mules .v-mules-sig { display: block; font-weight: var(--fw-regular, 400); color: var(--text-3); font-size: var(--fs-xs); margin-top: 2px; }
+.v-mules .v-mules-params th[scope="row"] { font-weight: var(--fw-regular, 400); min-width: 14rem; }
+.v-mules .v-mules-params tfoot th, .v-mules .v-mules-params tfoot td { border-bottom: 0; border-top: 1px solid var(--border-2); }
+
+:is(.v-mules, .v-mules-drawer) .v-mules-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 130px), 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+}
+:is(.v-mules, .v-mules-drawer) .v-mules-facts dt { font-size: var(--fs-xs); color: var(--text-3); }
+:is(.v-mules, .v-mules-drawer) .v-mules-facts dd { margin: 2px 0 0; font-size: var(--fs-md); font-weight: var(--fw-medium); text-align: left; }
+
+.v-mules-drawer .v-mules-ev { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border-1); }
+.v-mules-drawer .v-mules-ev__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2-5, 10px) 0;
+  border-bottom: 1px solid var(--border-1);
+}
+.v-mules-drawer .v-mules-ev__main { flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
+.v-mules-drawer .v-mules-ev__narr { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-1); overflow-wrap: anywhere; }
+.v-mules-drawer .v-mules-missing ul { margin: var(--sp-1) 0 0; padding-left: var(--sp-4); overflow-wrap: anywhere; }
+
+/* ===== profile ======================================================================================= */
+.v-profile .v-profile-picker { display: flex; align-items: center; gap: var(--sp-1-5); flex-wrap: wrap; min-width: 0; }
+.v-profile .v-profile-picker .select { width: min(100%, 22rem); min-width: 0; }
+.v-profile .v-profile-name { font-size: var(--fs-xl); font-weight: var(--fw-semibold); margin: 0 0 var(--sp-1); overflow-wrap: anywhere; }
+.v-profile .v-profile-id__top { align-items: flex-start; flex-wrap: wrap; }
+.v-profile .v-profile-links { justify-content: flex-end; }
+.v-profile .v-profile-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-1);
+}
+.v-profile .v-profile-meta dt { font-size: var(--fs-xs); color: var(--text-3); }
+.v-profile .v-profile-meta dd { margin: 2px 0 0; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.v-profile .v-profile-details summary { cursor: pointer; color: var(--text-link); width: max-content; }
+.v-profile .v-profile-details[open] summary { margin-bottom: var(--sp-2); }
+.v-profile .v-profile-stmt { padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border-1); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.v-profile .v-profile-stmt:last-child { border-bottom: 0; padding-bottom: 0; }
+
+/* ===== entities ====================================================================================== */
+.v-entities .v-entities-tools {
+  display: grid;
+  gap: var(--sp-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  align-items: start;
+}
+.v-entities .v-entities-thr { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
+.v-entities .v-entities-near { list-style: none; margin: 0; padding: 0; max-height: 340px; overflow: auto; }
+.v-entities .v-entities-near__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-1);
+}
+.v-entities .v-entities-near__row:last-child { border-bottom: 0; }
+.v-entities .v-entities-near__pair { display: flex; align-items: center; gap: var(--sp-1-5); font-size: var(--fs-sm); font-weight: var(--fw-medium); min-width: 0; }
+.v-entities .v-entities-near__bar { width: 64px; height: 4px; flex: none; border-radius: var(--r-full); }
+.v-entities .v-entities-near__act { flex: none; }
+.v-entities .v-entities-pad { padding: var(--sp-2) var(--sp-4); margin: 0; }
+.v-entities-drawer .v-entities-aliases { list-style: none; margin: var(--sp-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+
+@media (max-width: 560px) {
+  :is(.v-mules, .v-profile) .v-risk-wf { grid-template-columns: minmax(72px, 7.5rem) minmax(0, 1fr) 2.75rem; column-gap: var(--sp-2); font-size: var(--fs-xs); }
+  .v-mules .v-mules-headline { width: 100%; }
+  :is(.v-mules, .v-profile) .v-risk-wf__scale > span:nth-child(3) { visibility: hidden; }
+  .v-mules .v-mules-params th[scope="row"] { min-width: 10rem; }
+  .v-entities .v-entities-near__row { flex-direction: column; align-items: stretch; }
+  .v-profile .v-profile-picker .select { flex: 1 1 100%; width: 100%; }
+  .v-profile .v-profile-links { justify-content: flex-start; }
+}
+
+/* ===== entities: cluster review (P1 NLP-11 / NLP-12 / UI-S-14) ======================================= */
+:is(.v-entities, .v-entities-drawer) .v-entities-plist { margin: var(--sp-1) 0 0; padding-left: var(--sp-4); display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.v-entities .v-entities-conflict { font-size: var(--fs-xs); }
+
+.v-entities .v-entities-dec { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 320px; overflow: auto; }
+.v-entities .v-entities-dec__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-1);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.v-entities .v-entities-dec__row:last-child { border-bottom: 0; }
+.v-entities .v-entities-dec__row > .btn { flex: none; }
+.v-entities .v-entities-hist summary { cursor: pointer; color: var(--text-link); width: max-content; }
+.v-entities .v-entities-hist[open] summary { margin-bottom: var(--sp-1); }
+.v-entities-split { border: 0; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
+.v-entities-split .check { overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .v-entities .v-entities-dec__row { flex-direction: column; align-items: stretch; }
+  .v-entities .v-entities-near__act { flex-wrap: wrap; }
+}
+
+/* ===== mules: per-parameter explainability (P1 TF-15) ================================================ */
+.v-mules .v-mules-raw { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-2); font-weight: var(--fw-regular, 400); overflow-wrap: anywhere; }
+.v-mules .v-mules-formula { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 11px; color: var(--text-3); font-weight: var(--fw-regular, 400); overflow-wrap: anywhere; }
+.v-mules .v-mules-evlinks { display: inline-flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+.v-mules .v-mules-params td { vertical-align: top; }
+
+/* ===== profile: category / channel views (P1 TG-16 / TG-17) ========================================= */
+.v-profile .v-profile-seg { gap: var(--sp-1); margin-bottom: var(--sp-3); }
+.v-profile .v-profile-details .table th[scope="row"] { font-weight: var(--fw-regular, 400); overflow-wrap: anywhere; }
+.v-entities .v-entities-near__row { flex-wrap: wrap; }
+.v-entities .v-entities-near__row > .min-w-0 { flex: 1 1 12rem; }
+
+/* Repair: .table th is nowrap; the row-header holds the long scoring formula, which must wrap so the score
+   columns stay visible inside the table-wrap. */
+.v-mules .v-mules-params th[scope="row"],
+.v-mules .v-mules-params .v-mules-formula { white-space: normal; }
+.v-mules .v-mules-params th[scope="row"] { max-width: 22rem; }
+.v-mules .v-mules-formula { max-width: 40ch; word-break: break-word; }

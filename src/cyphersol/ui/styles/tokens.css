@@ -1,0 +1,392 @@
+/* CypherSOL design tokens (P3).
+ *
+ * Every colour used anywhere in the UI (CSS, inline SVG via classes or var(), canvas via cssVar()) comes from
+ * here. Light is the default; dark applies under prefers-color-scheme unless [data-theme="light"] is stamped,
+ * and always under [data-theme="dark"]. Text tokens meet WCAG 2.2 AA (>= 4.5:1) on --surface-1, --surface-2
+ * and --bg; control borders, focus ring, graph edges/nodes and line marks (--edge-*, --node-*, --chart-line-*)
+ * meet >= 3:1 (1.4.11). The categorical fills --chart-1..8 are a colour-blind-safe set; some (e.g. yellow,
+ * magenta) are below 3:1 on white, so they are only used as large filled areas that also carry a label or a
+ * table alternative, never as the sole thin line.
+ *
+ * Naming:  --surface-*, --text-*, --border-*, --accent*, --success|warn|danger|info(-bg|-text),
+ *          --risk-{critical|suspicious|low}(-bg|-text), --node-*, --chart-1..8, --sp-*, --r-*, --fs-*, --shadow-*.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- type ---- */
+  --font-sans: "Inter", "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-2xs: 10.5px;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-base: 13.5px;
+  --fs-md: 14.5px;
+  --fs-lg: 16px;
+  --fs-xl: 19px;
+  --fs-2xl: 23px;
+  --fs-3xl: 28px;
+  --lh-tight: 1.25;
+  --lh-base: 1.5;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --tracking-caps: 0.04em;
+
+  /* ---- spacing (4px grid with 2/6 half-steps) ---- */
+  --sp-0: 0;
+  --sp-px: 1px;
+  --sp-0-5: 2px;
+  --sp-1: 4px;
+  --sp-1-5: 6px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ---- radius ---- */
+  --r-xs: 3px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
+  --r-full: 999px;
+
+  /* ---- layout ---- */
+  --sidebar-w: 244px;
+  --sidebar-w-collapsed: 56px;
+  --topbar-h: 52px;
+  --content-max: 1600px;
+  --control-h: 32px;
+  --control-h-sm: 26px;
+  --row-h: 36px;
+
+  /* ---- motion ---- */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+
+  /* ---- z-index ---- */
+  --z-sticky: 10;
+  --z-sidebar: 40;
+  --z-popover: 60;
+  --z-modal: 80;
+  --z-toast: 100;
+
+  /* ---- neutrals / surfaces ---- */
+  --bg: #f6f6f7;
+  --surface-1: #ffffff;           /* cards, panels */
+  --surface-2: #f3f3f5;           /* hover, zebra, inset toolbars */
+  --surface-3: #e8e8ec;           /* pressed, selected-neutral */
+  --surface-sunken: #efeff2;      /* wells, code blocks */
+  --surface-overlay: #ffffff;     /* menus, dialogs, palette */
+  --surface-inverse: #18181b;
+  --scrim: rgba(15, 15, 20, 0.42);
+
+  --text-1: #17171a;              /* 17.6:1 on surface-1 */
+  --text-2: #3d3d45;              /* 10.6:1 */
+  --text-3: #5d5d68;              /* 6.4:1 on surface-1, 5.9:1 on surface-2 */
+  --text-disabled: #8b8b96;
+  --text-inverse: #fafafa;
+  --text-link: #2448b8;
+
+  --border-1: #e3e3e8;            /* dividers (decorative) */
+  --border-2: #cfcfd6;            /* card outlines (decorative) */
+  --border-control: #85858f;      /* inputs / checkboxes: 3.6:1 on surface-1 */
+  --border-strong: #5d5d68;
+
+  /* ---- accent (brand) ---- */
+  --accent: #2f55d4;              /* fills; white text on it 6.4:1 */
+  --accent-hover: #2546b6;
+  --accent-active: #1f3b99;
+  --accent-fg: #ffffff;
+  --accent-bg: #eaf0ff;           /* selected nav, subtle fills */
+  --accent-text: #2448b8;         /* accent-coloured text on surfaces: 7.3:1 */
+  --accent-border: #9fb4f2;
+
+  --focus-ring: #2f55d4;
+  --focus-width: 2px;
+  --focus-offset: 2px;
+
+  /* ---- status (never reused as series colours) ---- */
+  --success: #15803d;
+  --success-bg: #e8f6ec;
+  --success-text: #136c34;        /* 6.3:1 */
+  --warn: #b45309;
+  --warn-bg: #fdf3e2;
+  --warn-text: #8a4a05;           /* 6.6:1 */
+  --danger: #c22a2a;
+  --danger-bg: #fdeceb;
+  --danger-text: #a51f1f;         /* 6.9:1 */
+  --danger-fg: #ffffff;           /* text on --danger fills: 5.7:1 */
+  --danger-hover: #a51f1f;        /* white on it 7.5:1 */
+  --info: #2563eb;
+  --info-bg: #ebf2fe;
+  --info-text: #1d4ed8;           /* 6.7:1 */
+
+  /* ---- money direction ---- */
+  --debit-text: #a51f1f;
+  --credit-text: #136c34;
+
+  /* ---- risk tiers (mule score 80/50 thresholds) ---- */
+  --risk-critical: #c22a2a;
+  --risk-critical-bg: #fdeceb;
+  --risk-critical-text: #a51f1f;
+  --risk-suspicious: #c26a00;
+  --risk-suspicious-bg: #fff3df;
+  --risk-suspicious-text: #8a4a05;
+  --risk-low: #15803d;
+  --risk-low-bg: #e8f6ec;
+  --risk-low-text: #136c34;
+
+  /* ---- layering / entity roles (SRS FR-TRACE layering vocabulary) ---- */
+  --node-source: #2f55d4;          /* credit source */
+  --node-source-bg: #eaf0ff;
+  --node-statement: #137639;       /* has statement */
+  --node-statement-bg: #e8f6ec;
+  --node-details: #6b6b76;         /* details only */
+  --node-details-bg: #f1f1f4;
+  --node-misc: #7a4fd0;            /* collapsed misc */
+  --node-misc-bg: #f2edfd;
+  --node-system: #8b8b96;          /* system / UNRESOLVED_* */
+  --node-system-bg: #f3f3f5;
+  --node-system-text: #5d5d68;     /* badge text on --node-system-bg: 6.0:1 */
+
+  /* ---- graph topology roles (deliberately NOT red/amber/green so they never read as risk) ---- */
+  --node-hub: #3a3fb8;             /* primary account hub */
+  --node-conduit: #0e7490;         /* bridge / conduit */
+  --node-exit: #a3238f;            /* cash / VDA exit endpoint */
+  --node-leaf: #7a8291;              /* peripheral counterparty */
+  --edge-muted: #8a909c;   /* 3.2:1 on white */
+  --edge-strong: #0e7490;
+  --node-stroke: #ffffff;
+
+  /* ---- charts: validated colour-blind-safe categorical order (assign in order, never cycle) ---- */
+  --chart-1: #2a78d6;  /* blue */
+  --chart-2: #eb6834;  /* orange */
+  --chart-3: #1baf7a;  /* aqua */
+  --chart-line-3: #12805a; /* aqua for thin lines/marks: >= 3:1 on the chart surface */
+  --chart-4: #eda100;  /* yellow */
+  --chart-5: #e87ba4;  /* magenta */
+  --chart-6: #008300;  /* green */
+  --chart-7: #6250d6;  /* violet */
+  --chart-8: #e34948;  /* red */
+  --chart-credit: #2a78d6;
+  --chart-debit: #eb6834;
+  --chart-seq-1: #cde2fb;
+  --chart-seq-2: #9ec5f4;
+  --chart-seq-3: #6da7ec;
+  --chart-seq-4: #3987e5;
+  --chart-seq-5: #256abf;
+  --chart-seq-6: #184f95;
+  --chart-seq-7: #0d366b;
+  --chart-neutral: #f0efec;
+  --chart-grid: #e8e8ec;
+  --chart-axis: #85858f;
+  --chart-surface: #ffffff;
+
+  /* ---- elevation ---- */
+  --shadow-xs: 0 1px 1px rgba(16, 16, 24, 0.04);
+  --shadow-sm: 0 1px 2px rgba(16, 16, 24, 0.06), 0 1px 1px rgba(16, 16, 24, 0.04);
+  --shadow-md: 0 4px 12px rgba(16, 16, 24, 0.08), 0 1px 3px rgba(16, 16, 24, 0.06);
+  --shadow-lg: 0 16px 40px rgba(16, 16, 24, 0.16), 0 2px 8px rgba(16, 16, 24, 0.08);
+}
+
+/* ---- dark theme: OS preference (unless the viewer stamped light) ---- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0c0c0e;
+    --surface-1: #151518;
+    --surface-2: #1c1c20;
+    --surface-3: #26262c;
+    --surface-sunken: #111114;
+    --surface-overlay: #1c1c21;
+    --surface-inverse: #f4f4f5;
+    --scrim: rgba(0, 0, 0, 0.6);
+    --text-1: #ededf0;
+    --text-2: #c6c6ce;
+    --text-3: #a0a0ab;
+    --text-disabled: #6c6c76;
+    --text-inverse: #111114;
+    --text-link: #9db3ff;
+    --border-1: #26262c;
+    --border-2: #33333b;
+    --border-control: #6f6f7a;
+    --border-strong: #a0a0ab;
+    --accent: #5b7cf0;
+    --accent-hover: #6f8cf5;
+    --accent-active: #829cf8;
+    --accent-fg: #0c0c0e;
+    --accent-bg: #1b2340;
+    --accent-text: #9db3ff;
+    --accent-border: #3a4c8f;
+    --focus-ring: #8aa4ff;
+    --success: #34b363;
+    --success-bg: #11291a;
+    --success-text: #6fdc95;
+    --warn: #e09a2d;
+    --warn-bg: #2d200b;
+    --warn-text: #f4bf63;
+    --danger: #ef5b5b;
+    --danger-bg: #331314;
+    --danger-text: #ff9a9a;
+  --danger-fg: #0c0c0e;          /* dark text on --danger: 5.3:1 */
+  --danger-hover: #f37373;
+    --danger-fg: #0c0c0e;          /* dark text on --danger: 5.3:1 */
+    --danger-hover: #f37373;
+    --info: #5b8def;
+    --info-bg: #13213d;
+    --info-text: #9dbcff;
+    --debit-text: #ff9a9a;
+    --credit-text: #6fdc95;
+    --risk-critical: #ef5b5b;
+    --risk-critical-bg: #331314;
+    --risk-critical-text: #ff9a9a;
+    --risk-suspicious: #e8a33a;
+    --risk-suspicious-bg: #2e210c;
+    --risk-suspicious-text: #f4bf63;
+    --risk-low: #34b363;
+    --risk-low-bg: #11291a;
+    --risk-low-text: #6fdc95;
+    --node-source: #6f8cf5;
+    --node-source-bg: #1b2340;
+    --node-statement: #34b363;
+    --node-statement-bg: #11291a;
+    --node-details: #9a9aa5;
+    --node-details-bg: #222227;
+    --node-misc: #a98bf0;
+    --node-misc-bg: #251d3d;
+    --node-system: #74747e;
+    --node-system-bg: #1c1c20;
+  --node-system-text: #a0a0ab;
+    --node-system-text: #a0a0ab;
+    --node-hub: #8189f0;
+    --node-conduit: #2bb3cf;
+    --node-exit: #e06acb;
+    --node-leaf: #7b8494;
+    --edge-muted: #6b7180;
+    --edge-strong: #2bb3cf;
+    --node-stroke: #151518;
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+  --chart-line-3: #199e70;
+    --chart-line-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
+    --chart-6: #008300;
+    --chart-7: #9085e9;
+    --chart-8: #e66767;
+    --chart-credit: #3987e5;
+    --chart-debit: #d95926;
+    --chart-neutral: #383835;
+    --chart-grid: #26262c;
+    --chart-axis: #6f6f7a;
+    --chart-surface: #151518;
+    --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* ---- dark theme: explicit toggle (identical values; keep both blocks in sync) ---- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0c0e;
+  --surface-1: #151518;
+  --surface-2: #1c1c20;
+  --surface-3: #26262c;
+  --surface-sunken: #111114;
+  --surface-overlay: #1c1c21;
+  --surface-inverse: #f4f4f5;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --text-1: #ededf0;
+  --text-2: #c6c6ce;
+  --text-3: #a0a0ab;
+  --text-disabled: #6c6c76;
+  --text-inverse: #111114;
+  --text-link: #9db3ff;
+  --border-1: #26262c;
+  --border-2: #33333b;
+  --border-control: #6f6f7a;
+  --border-strong: #a0a0ab;
+  --accent: #5b7cf0;
+  --accent-hover: #6f8cf5;
+  --accent-active: #829cf8;
+  --accent-fg: #0c0c0e;
+  --accent-bg: #1b2340;
+  --accent-text: #9db3ff;
+  --accent-border: #3a4c8f;
+  --focus-ring: #8aa4ff;
+  --success: #34b363;
+  --success-bg: #11291a;
+  --success-text: #6fdc95;
+  --warn: #e09a2d;
+  --warn-bg: #2d200b;
+  --warn-text: #f4bf63;
+  --danger: #ef5b5b;
+  --danger-bg: #331314;
+  --danger-text: #ff9a9a;
+  --danger-fg: #0c0c0e;          /* dark text on --danger: 5.3:1 */
+  --danger-hover: #f37373;
+  --info: #5b8def;
+  --info-bg: #13213d;
+  --info-text: #9dbcff;
+  --debit-text: #ff9a9a;
+  --credit-text: #6fdc95;
+  --risk-critical: #ef5b5b;
+  --risk-critical-bg: #331314;
+  --risk-critical-text: #ff9a9a;
+  --risk-suspicious: #e8a33a;
+  --risk-suspicious-bg: #2e210c;
+  --risk-suspicious-text: #f4bf63;
+  --risk-low: #34b363;
+  --risk-low-bg: #11291a;
+  --risk-low-text: #6fdc95;
+  --node-source: #6f8cf5;
+  --node-source-bg: #1b2340;
+  --node-statement: #34b363;
+  --node-statement-bg: #11291a;
+  --node-details: #9a9aa5;
+  --node-details-bg: #222227;
+  --node-misc: #a98bf0;
+  --node-misc-bg: #251d3d;
+  --node-system: #74747e;
+  --node-system-bg: #1c1c20;
+  --node-system-text: #a0a0ab;
+  --node-hub: #8189f0;
+  --node-conduit: #2bb3cf;
+  --node-exit: #e06acb;
+  --node-leaf: #7b8494;
+  --edge-muted: #6b7180;
+  --edge-strong: #2bb3cf;
+  --node-stroke: #151518;
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-line-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #008300;
+  --chart-7: #9085e9;
+  --chart-8: #e66767;
+  --chart-credit: #3987e5;
+  --chart-debit: #d95926;
+  --chart-neutral: #383835;
+  --chart-grid: #26262c;
+  --chart-axis: #6f6f7a;
+  --chart-surface: #151518;
+  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
