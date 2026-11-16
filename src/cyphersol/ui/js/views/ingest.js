@@ -15,7 +15,9 @@
  *     rows outside the period, ...), file-name cross-checks, period coverage, OCR confidence per page, PAN,
  *     password formula, warnings (details drawer).
  *   - last pipeline telemetry + "Run AI backup agents (S2–S4)"; ingest history.
- *   Uploads are NOT bound to the view's AbortSignal: the server finishes the batch even if the analyst
+ *   Each file is staged with its own request (POST …/uploads), then a background job ingests the batch
+ *   (POST …/ingest-jobs → 202) and is polled (GET /api/jobs/{id}) for phase / progress shown on the chips (P2).
+ *   Uploads are NOT bound to the view's AbortSignal: the server finishes the job even if the analyst
  *   navigates away, so the result is still applied to the store and reported with a toast.
  * Statements tab: custody grid (bank, period, rows, opening/closing, balance check, full SHA-256) and a
  *   provenance drawer per statement (GET …/provenance).
@@ -24,7 +26,7 @@
  *   frame edges and column dividers, field per column (incl. value date, signed amount, Dr/Cr marker), live
  *   parsed-row preview that anchors right-aligned amounts by their right edge like the parser (PDF-23),
  *   POST /api/draw-templates. */
-import { api, fileToBase64, isAbort } from "../core/api.js";
+import { ApiError, api, fileToBase64, isAbort } from "../core/api.js";
 import { EXEC_MODES, UPLOAD_ACCEPT, execModeLabel } from "../core/constants.js";
 import { delegate, formValues, html, render, uid } from "../core/dom.js";
 import { DASH, bytes, date, dateTime, inr, int, plural } from "../core/format.js";
@@ -41,7 +43,7 @@ import { toast, withBusy } from "../components/toast.js";
 export const styles = ["views/cases.css"];
 
 const ACCEPT_EXT = new Set(UPLOAD_ACCEPT.split(",").map((s) => s.trim().replace(/^\./, "").toLowerCase()));
-const MAX_BATCH_BYTES = 90 * 1024 * 1024; // raw bytes per request (base64 grows ~4/3; server cap is 150 MB)
+const MAX_BATCH_BYTES = 90 * 1024 * 1024; // raw bytes per ingest job (files are staged one request each)
 
 const STATUS = {
   queued: { label: "Queued", tone: "neutral" },
@@ -138,6 +140,14 @@ const statusChip = (st, text) => {
   return html`<span class="badge badge--${s.tone} v-ingest-chip" data-status="${st}">${s.busy ? spinner(s.label) : ""}${text || s.label}</span>`;
 };
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const JOB_PHASES = { parse: "Parsing", validate: "Validating", entities: "Resolving entities", commit: "Saving" };
+/** Chip text for a running ingest job: "Parsing 12/100 · 34%". */
+const jobLabel = (j) => {
+  if (j.status === "queued") return "Waiting to start";
+  const phase = JOB_PHASES[j.phase] || "Processing";
+  const count = j.total > 1 ? ` ${j.done}/${j.total}` : "";
+  return `${phase}${count} · ${Math.round((j.progress || 0) * 100)}%`;
+};
 const pct1 = (f) => (Math.round(f * 1000) / 10).toString();
 
 const pageList = (pages) => (pages || []).map(Number).sort((a, b) => a - b).join(", ");
@@ -519,7 +529,7 @@ export async function mount(el, ctx) {
               ${editable ? "" : html`disabled`}>${icon("key", { size: "sm" })}</button>
           </div>`
         : html`<span class="xsmall muted">—</span>`}</td>
-      <td>${statusChip(q.status)}</td>
+      <td>${statusChip(q.status, q.status === "uploading" && q.progress ? jobLabel(q.progress) : "")}</td>
       <td class="v-ingest-summary">${rowSummary(q)}</td>
       <td class="v-ingest-rowact">
         ${q.report ? html`<button type="button" class="btn btn--ghost btn--sm" data-action="details" data-qid="${q.id}" aria-label="Details for ${q.name}">${icon("eye", { size: "sm" })}</button>` : ""}
@@ -628,6 +638,26 @@ export async function mount(el, ctx) {
     return out;
   }
 
+  /** Poll an ingest job until it finishes; resolves with its result, rejects with an ApiError-like error
+   *  (status = the job's http_status, so a 409 still reads as a duplicate conflict). */
+  async function pollJob(job, onProgress) {
+    let j = job;
+    let delay = 300;
+    while (j.status === "queued" || j.status === "running") {
+      onProgress?.(j);
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(1500, Math.round(delay * 1.25));
+      j = await api.get(`/api/jobs/${encodeURIComponent(j.job_id)}`, { params: { include_result: "false" } });
+    }
+    if (j.status !== "succeeded") {
+      throw new ApiError(j.http_status || 500, j.error || "Ingest job failed", {
+        errorId: j.error_id || null, path: `/api/jobs/${j.job_id}`, body: { error: j.error, error_type: j.error_type },
+      });
+    }
+    const full = await api.get(`/api/jobs/${encodeURIComponent(j.job_id)}`);
+    return full.result || {};
+  }
+
   async function runIngest({ forceSkip = false } = {}) {
     if (running) return;
     const items = queue.filter((q) => SENDABLE.has(q.status));
@@ -646,15 +676,20 @@ export async function mount(el, ctx) {
     let anyOk = false;
     try {
       for (const batch of batchesOf(items)) {
+        // P2: each file is staged in its own request (POST …/uploads), then one background ingest job is
+        // started for the batch (POST …/ingest-jobs) and polled (GET /api/jobs/{id}) for progress.
         const payload = [];
         for (const q of batch) {
           q.status = "reading";
+          q.progress = null;
           patchRow(q);
           try {
-            payload.push({ filename: q.name, content_b64: await fileToBase64(q.file), password: q.isPdf && q.password ? q.password : null, ...(q.isPdf && hasHints(q.hints) ? { password_hints: q.hints } : {}) });
+            const staged = await api.post(ctx.api.url("uploads"), { filename: q.name, content_b64: await fileToBase64(q.file) });
+            payload.push({ upload_id: staged.upload_id, password: q.isPdf && q.password ? q.password : null, ...(q.isPdf && hasHints(q.hints) ? { password_hints: q.hints } : {}) });
+            q.uploadId = staged.upload_id;
           } catch (err) {
             q.status = "failed";
-            q.error = `Could not read the file: ${err.message || err}`;
+            q.error = `Could not upload the file: ${err.message || err}`;
           }
           patchRow(q);
         }
@@ -666,12 +701,18 @@ export async function mount(el, ctx) {
         });
         let res;
         try {
-          // deliberately not bound to ctx.signal: the server completes the batch regardless
-          res = await api.post(ctx.api.url("upload"), {
+          // deliberately not bound to ctx.signal: the server completes the job regardless
+          const job = await api.post(ctx.api.url("ingest-jobs"), {
             files: payload,
             template_id: templateId || null,
             execution_mode: mode,
             on_duplicate: onDuplicate,
+          });
+          res = await pollJob(job, (j) => {
+            sendQs.forEach((q) => {
+              q.progress = j;
+              patchRow(q);
+            });
           });
         } catch (err) {
           if (err && err.isConflict) {
@@ -679,12 +720,14 @@ export async function mount(el, ctx) {
             sendQs.forEach((q) => {
               q.status = names.has(q.name) ? "conflict" : "queued";
               q.error = names.has(q.name) ? "Same SHA-256 as a statement already in this case (or repeated in this upload)." : "";
+              q.progress = null;
             });
             conflict = err;
           } else {
             sendQs.forEach((q) => {
               q.status = "failed";
               q.error = err?.message || "Upload failed.";
+              q.progress = null;
             });
             if (!isAbort(err) && ctx.isCurrent()) toast.error(err, { title: "Upload failed" });
           }
@@ -692,6 +735,9 @@ export async function mount(el, ctx) {
           if (conflict) break;
           continue;
         }
+        sendQs.forEach((q) => {
+          q.progress = null;
+        });
         const reports = res.ingested || [];
         sendQs.forEach((q, i) => {
           const r = reports[i] && reports[i].filename === q.name ? reports[i] : reports.find((x) => x.filename === q.name) || reports[i];

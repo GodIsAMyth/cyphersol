@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import math
+import functools
 import re
 import zipfile
 from decimal import Decimal
@@ -29,6 +30,7 @@ def _col_letter_to_idx(ref: str) -> int:
     return max(0, idx - 1)
 
 
+@functools.lru_cache(maxsize=4096)
 def _idx_to_col_letter(idx: int) -> str:
     res = []
     n = idx + 1
@@ -300,8 +302,11 @@ def _xml_escape(text: str) -> str:
     )
 
 
+_INVALID_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
+
 def _strip_invalid_xml_chars(text: str) -> str:
-    return re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", " ", text)
+    return _INVALID_XML_CHARS_RE.sub(" ", text) if _INVALID_XML_CHARS_RE.search(text) else text
 
 
 def write_xlsx_bytes(sheets: List[Tuple[str, List[Sequence[Any]]]]) -> bytes:
@@ -312,12 +317,18 @@ def write_xlsx_bytes(sheets: List[Tuple[str, List[Sequence[Any]]]]) -> bytes:
     shared_strings: List[str] = []
     ss_index: Dict[str, int] = {}
 
+    raw_index: Dict[str, int] = {}  # memo by the raw (unstripped) text: repeated cell values skip the regex
+
     def get_ss_idx(s: str) -> int:
+        hit = raw_index.get(s)
+        if hit is not None:
+            return hit
         clean = _strip_invalid_xml_chars(s)
         if clean not in ss_index:
             ss_index[clean] = len(shared_strings)
             shared_strings.append(clean)
-        return ss_index[clean]
+        raw_index[s] = ss_index[clean]
+        return raw_index[s]
 
     safe_sheets: List[Tuple[str, str]] = []
     used_names = set()

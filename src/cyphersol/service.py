@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -19,8 +20,9 @@ from cyphersol.demo_data import ensure_demo_cases_seeded
 from cyphersol.edge.itr_compliance import generate_itr_compliance_report
 from cyphersol.edge.loan_eligibility import compute_loan_eligibility_report
 from cyphersol.edge.tally_exporter import TallyLedgerMap, build_tally_export, push_to_tally_http
-from cyphersol.ingestion.anomaly_gate import find_duplicate_groups, mark_bulk_duplicates_ignored, run_anomaly_gate
+from cyphersol.ingestion.anomaly_gate import CaseDuplicateIndex, find_duplicate_groups, mark_bulk_duplicates_ignored, run_anomaly_gate
 from cyphersol.ingestion.parser import bulk_parse_statements
+from cyphersol.jobs import INGEST_PHASE_WEIGHTS, JobManager, UploadStore
 from cyphersol.ingestion.pdf_parser import (
     extract_pdf_data,
     generate_password_candidates,
@@ -75,7 +77,13 @@ from cyphersol.storage import MAX_TX_IDS, TX_SORT_COLUMNS, CypherVault, IngestBa
 from cyphersol.taxonomy import CATEGORIES_52, INDIAN_BANKS, KNOWLEDGE_BASE_POINT_COUNT, knowledge_base_stats
 from cyphersol.trace.bidirectional import analyze_bidirectional_flow, list_all_bidirectional_pairs
 from cyphersol.trace.financial_profile import build_individual_financial_profile
-from cyphersol.trace.graph_engine import build_network_graph
+from cyphersol.trace.graph_engine import (
+    DEFAULT_MAX_DISPLAY_NODES,
+    build_network_graph,
+    graph_neighbourhood,
+    shared_event_cache,
+    slice_network_graph,
+)
 from cyphersol.trace.layering import (
     MAX_TRACE_DEPTH,
     PATH_SEPARATOR,
@@ -83,16 +91,27 @@ from cyphersol.trace.layering import (
     expand_layering_node,
     misc_path_key,
 )
-from cyphersol.trace.loop_detector import detect_circular_loops
+from cyphersol.trace.loop_detector import (
+    DEFAULT_CYCLE_LENGTH as LOOP_DEFAULT_CYCLE_LENGTH,
+    DEFAULT_MAX_INSTANCES_PER_LOOP as LOOP_DEFAULT_MAX_INSTANCES,
+    detect_circular_loops,
+)
 from cyphersol.trace.mule_scorer import evaluate_all_mule_accounts
 
 _LOG = logging.getLogger("cyphersol.service")
 
 ANALYST_ENV = "CYPHERSOL_ANALYST"
-OVERVIEW_TX_PAGE = 500          # rows of each transaction list embedded in the overview (BE-08)
+OVERVIEW_TX_PAGE = 500          # legacy: rows per embedded list when a caller asks for tx_limit (BE-08)
 MAX_TX_PAGE = 2000              # hard cap for one /transactions page
 ANALYSIS_CACHE_CASES = 4        # per-case analysis snapshots kept in memory (BE-07)
 ANALYSIS_MEMO_ENTRIES = 48      # memoised analytics results per snapshot
+EVENT_CACHE_ENTRIES = 16        # distinct transfer-event extractions (filter sets) kept per snapshot
+GRAPH_DEFAULT_MAX_NODES = 400   # nodes in a graph view by default; the rest load via expand-on-demand (TG-04)
+GRAPH_MAX_NODES_RANGE = (10, 5000)
+GRAPH_SERVER_LAYOUT_MAX_NODES = 300  # 'auto' layout: server force layout up to this size, else client layout
+GRAPH_LAYOUT_MODES = ("auto", "server", "seed", "none")
+GRAPH_EDGE_TX_IDS = 50          # tx_ids listed per graph edge (tx_count is always exact)
+GRAPH_EXPAND_LIMIT = (1, 500)
 DUPLICATE_POLICIES = ("reject", "skip")
 RULE_SCOPES = ("case", "global")
 TALLY_MAP_SETTING = "tally_ledger_map"
@@ -170,7 +189,8 @@ def _default_analyst() -> str:
 class _CaseSnapshot:
     """Read-only view of one case at one revision, plus memoised analytics computed from it (BE-07)."""
 
-    __slots__ = ("revision", "statements", "transactions", "entities", "misc_ids", "memo", "lock", "misc_paths")
+    __slots__ = ("revision", "statements", "transactions", "entities", "misc_ids", "memo", "lock", "misc_paths",
+                 "order_keys", "events")
 
     def __init__(
         self,
@@ -179,15 +199,18 @@ class _CaseSnapshot:
         transactions: List[NormalizedTransaction],
         entities: List[ResolvedEntity],
         misc_ids: Set[str],
+        order_keys: Optional[List[tuple]] = None,
     ) -> None:
         self.revision = revision
         self.statements = statements
         self.transactions = transactions
+        self.order_keys: List[tuple] = order_keys or []  # (txn_date, row_index, rowid) per transaction
         self.entities = entities
         self.misc_ids = misc_ids
         self.misc_paths: Dict[str, List[str]] = {}
         self.memo: "OrderedDict[tuple, Any]" = OrderedDict()
         self.lock = threading.Lock()
+        self.events: Dict[tuple, Any] = {}  # extracted transfer events shared by the analytics (BE-07)
 
 
 def _tx_state(t: NormalizedTransaction) -> tuple:
@@ -235,7 +258,10 @@ class CypherApplicationService:
         seed_demo: bool = True,
         llm_transport_fn: Optional[HttpTransportFn] = None,
         analyst: Optional[str] = None,
+        warm_analysis: bool = False,
     ) -> None:
+        """``warm_analysis=True`` precomputes the default analytics in the background after every ingest or
+        mutation (see :meth:`schedule_warmup`); the HTTP server enables it, library callers and tests do not."""
         self.vault = CypherVault(db_path)
         self.sample_dir = sample_dir
         self.analyst = (analyst or _default_analyst()).strip() or "local_operator"
@@ -254,6 +280,9 @@ class CypherApplicationService:
         self._case_locks: Dict[str, threading.RLock] = {}
         self._cache_lock = threading.Lock()
         self._analysis_cache: "OrderedDict[str, _CaseSnapshot]" = OrderedDict()
+        self.jobs = JobManager(workers=2)
+        self.uploads = UploadStore()
+        self.warm_analysis = bool(warm_analysis)
 
     # ------------------------------------------------------------------------------------------ helpers
     def _case_lock(self, case_id: str) -> threading.RLock:
@@ -337,12 +366,16 @@ class CypherApplicationService:
             if snap is not None and snap.revision == rev:
                 self._analysis_cache.move_to_end(case_id)
                 return snap
+        with self._cache_lock:
+            prev = self._analysis_cache.get(case_id)
+        txns, keys = self._load_transactions(case_id, prev)
         snap = _CaseSnapshot(
             rev,
             self.vault.get_statements(case_id),
-            self.vault.get_transactions(case_id),
+            txns,
             self.vault.get_entities(case_id),
             self.vault.get_misc_entities(case_id),
+            order_keys=keys,
         )
         snap.misc_paths = self.vault.get_all_misc_paths(case_id)
         if self.vault.get_case_revision(case_id) == rev:  # not mutated while loading -> cacheable
@@ -353,13 +386,37 @@ class CypherApplicationService:
                     self._analysis_cache.popitem(last=False)
         return snap
 
+    def _load_transactions(
+        self, case_id: str, prev: Optional[_CaseSnapshot]
+    ) -> Tuple[List[NormalizedTransaction], List[tuple]]:
+        """Case transactions in (txn_date, row_index, rowid) order. With a cached snapshot of an older revision,
+        only rows written since that revision are read and merged (BE-07); a row-count mismatch (deleted rows)
+        falls back to a full load."""
+        if prev is not None and prev.order_keys and len(prev.order_keys) == len(prev.transactions):
+            changed, ckeys, total = self.vault.get_transactions_with_order_keys(case_id, changed_since=prev.revision)
+            by_id: Dict[str, Tuple[tuple, NormalizedTransaction]] = {
+                t.tx_id: (k, t) for k, t in zip(prev.order_keys, prev.transactions)
+            }
+            for k, t in zip(ckeys, changed):
+                by_id[t.tx_id] = (k, t)
+            if len(by_id) == total:
+                if not changed:
+                    return list(prev.transactions), list(prev.order_keys)
+                merged = sorted(by_id.values(), key=lambda kt: kt[0])
+                return [t for _k, t in merged], [k for k, _t in merged]
+        txns, keys, _total = self.vault.get_transactions_with_order_keys(case_id)
+        return txns, keys
+
     @staticmethod
     def _memo(snap: _CaseSnapshot, key: tuple, compute: Callable[[], Any]) -> Any:
         with snap.lock:
             if key in snap.memo:
                 snap.memo.move_to_end(key)
                 return snap.memo[key]
-        value = compute()
+        if len(snap.events) > EVENT_CACHE_ENTRIES:
+            snap.events.clear()
+        with shared_event_cache(snap.events):
+            value = compute()
         with snap.lock:
             snap.memo[key] = value
             while len(snap.memo) > ANALYSIS_MEMO_ENTRIES:
@@ -379,22 +436,33 @@ class CypherApplicationService:
         max_cycle_length: Optional[int] = None,
         time_budget_s: Optional[float] = None,
         max_instances_per_loop: Optional[int] = None,
+        hub_degree_cap: Any = "default",
     ):
+        # Defaults are filled in so the UI's default scan, the exports and the warm-up share one memo entry.
+        max_days = int(max_days)
+        min_retention = float(min_retention)
+        if max_cycle_length is None:
+            max_cycle_length = LOOP_DEFAULT_CYCLE_LENGTH
+        if max_instances_per_loop is None:
+            max_instances_per_loop = LOOP_DEFAULT_MAX_INSTANCES
         kwargs: Dict[str, Any] = {"max_cycle_days": max_days, "min_retention_ratio": min_retention}
+        if hub_degree_cap != "default":
+            kwargs["hub_degree_cap"] = hub_degree_cap
         if max_instances_per_loop is not None:
             kwargs["max_instances_per_loop"] = int(max_instances_per_loop)
         if max_cycle_length is not None:
             kwargs["max_cycle_length"] = int(max_cycle_length)
         if time_budget_s is not None:
             kwargs["time_budget_s"] = float(time_budget_s)
-        key = ("loops", max_days, float(min_retention), max_cycle_length, time_budget_s, max_instances_per_loop)
+        key = ("loops", max_days, float(min_retention), max_cycle_length, time_budget_s, max_instances_per_loop,
+               hub_degree_cap)
         return self._memo(
             snap, key, lambda: detect_circular_loops(snap.statements, list(snap.transactions), snap.entities, **kwargs)
         )
 
-    def _graph(self, snap: _CaseSnapshot, **filters: Any) -> Dict[str, Any]:
-        key = ("graph",) + tuple(sorted(filters.items()))
-
+    def _graph_full(self, snap: _CaseSnapshot, **filters: Any) -> Dict[str, Any]:
+        """Uncapped, un-laid-out graph for one filter set; every node-capped view and expansion slices it."""
+        key = ("graph_full",) + tuple(sorted(filters.items()))
         max_amount = filters.pop("max_amount", None)
         ifsc = filters.pop("ifsc", None)
 
@@ -404,8 +472,32 @@ class CypherApplicationService:
             # applied by the engine, which also echoes them in summary.filters (TG-12).
             return build_network_graph(
                 snap.statements, list(snap.transactions), snap.entities, mule_scores=mule_map,
-                ifsc_filter=ifsc, max_amount=max_amount, **filters,
+                ifsc_filter=ifsc, max_amount=max_amount, max_display_nodes=0, layout="none", **filters,
             )
+
+        return self._memo(snap, key, compute)
+
+    def _graph(
+        self,
+        snap: _CaseSnapshot,
+        max_nodes: Optional[int] = None,
+        layout: Optional[str] = None,
+        max_edge_tx_ids: Optional[int] = GRAPH_EDGE_TX_IDS,
+        **filters: Any,
+    ) -> Dict[str, Any]:
+        """Node-capped graph view (TG-04): top ``max_nodes`` by volume, laid out on the server only when small
+        (``layout='auto'``); larger views carry seed positions that the client's force layout refines."""
+        cap = GRAPH_DEFAULT_MAX_NODES if max_nodes is None else int(max_nodes)
+        mode = (layout or "auto").strip().lower()
+        if mode not in GRAPH_LAYOUT_MODES:
+            raise ValueError(f"layout must be one of {', '.join(GRAPH_LAYOUT_MODES)}")
+        key = ("graph", cap, mode, max_edge_tx_ids) + tuple(sorted(filters.items()))
+
+        def compute() -> Dict[str, Any]:
+            full = self._graph_full(snap, **filters)
+            shown = min(cap, len(full["nodes"])) if cap > 0 else len(full["nodes"])
+            eff = mode if mode != "auto" else ("server" if shown <= GRAPH_SERVER_LAYOUT_MAX_NODES else "seed")
+            return slice_network_graph(full, cap, layout=eff, max_edge_tx_ids=max_edge_tx_ids)
 
         return self._memo(snap, key, compute)
 
@@ -608,19 +700,35 @@ class CypherApplicationService:
         self._audit(case_obj.case_id, "CREATE_CASE", {"title": case_obj.title, "mode": mode})
         return case_obj.to_dict()
 
-    def get_case_overview(self, case_id: str, tx_offset: int = 0, tx_limit: int = OVERVIEW_TX_PAGE) -> Dict[str, Any]:
-        """Case header, statements, entities and SQL aggregates, plus at most one page of each transaction
-        list (all rows / suspense / flagged). Use :meth:`list_transactions` to page further (BE-08)."""
+    def get_case_overview(self, case_id: str, tx_offset: int = 0, tx_limit: int = 0) -> Dict[str, Any]:
+        """Case header, statements, entities and SQL aggregates only (BE-08). Transactions are paged through
+        :meth:`list_transactions`; ``tx_limit > 0`` (legacy callers) additionally embeds one page of each list
+        (all rows / suspense / flagged), capped at MAX_TX_PAGE."""
         case_obj = self._require_case(case_id)
         limit = max(0, min(int(tx_limit), MAX_TX_PAGE))
         stmts = self.vault.get_statements(case_id)
         ents = self.vault.get_entities(case_id)
         agg = self.vault.transaction_aggregates(case_id)
-        page, total = self.vault.query_transactions(case_id, offset=max(0, int(tx_offset)), limit=limit)
-        suspense, suspense_total = self.vault.query_transactions(
-            case_id, limit=limit, filters={"is_suspense": True, "include_ignored": False}
-        )
-        flagged, flagged_total = self.vault.query_transactions(case_id, limit=limit, filters={"flagged": True})
+        lists: Dict[str, Any] = {}
+        if limit:
+            page, total = self.vault.query_transactions(case_id, offset=max(0, int(tx_offset)), limit=limit)
+            suspense, suspense_total = self.vault.query_transactions(
+                case_id, limit=limit, filters={"is_suspense": True, "include_ignored": False}
+            )
+            flagged, flagged_total = self.vault.query_transactions(case_id, limit=limit, filters={"flagged": True})
+            lists = {
+                "transactions": [tx_to_json(t) for t in page],
+                "transactions_page": {
+                    "offset": max(0, int(tx_offset)),
+                    "limit": limit,
+                    "total": total,
+                    "has_more": max(0, int(tx_offset)) + len(page) < total,
+                },
+                "suspense_transactions": [tx_to_json(t) for t in suspense],
+                "suspense_truncated": len(suspense) < suspense_total,
+                "anomaly_transactions": [tx_to_json(t) for t in flagged],
+                "anomaly_truncated": len(flagged) < flagged_total,
+            }
 
         # Near-miss merge candidates come from the blocked resolver preview (no O(n^2) loop), memoised per
         # case revision. Rows keep entity_a / entity_b / similarity and add entity_a_id / entity_b_id.
@@ -639,17 +747,7 @@ class CypherApplicationService:
             "case": case_obj.to_dict(),
             "revision": self.vault.get_case_revision(case_id),
             "statements": [s.to_dict() for s in stmts],
-            "transactions": [tx_to_json(t) for t in page],
-            "transactions_page": {
-                "offset": max(0, int(tx_offset)),
-                "limit": limit,
-                "total": total,
-                "has_more": max(0, int(tx_offset)) + len(page) < total,
-            },
-            "suspense_transactions": [tx_to_json(t) for t in suspense],
-            "suspense_truncated": len(suspense) < suspense_total,
-            "anomaly_transactions": [tx_to_json(t) for t in flagged],
-            "anomaly_truncated": len(flagged) < flagged_total,
+            **lists,
             "entities": [e.to_dict() for e in ents],
             "summary": {
                 "statements_count": len(stmts),
@@ -875,8 +973,12 @@ class CypherApplicationService:
         on_duplicate: str = "reject",
         password_hints: Optional[Mapping[str, Any]] = None,
         file_password_hints: Optional[Sequence[Optional[Mapping[str, Any]]]] = None,
+        progress: Optional[Callable[[str, int, int], None]] = None,
     ) -> Dict[str, Any]:
         """Parse, validate, categorise and persist a batch of statement files.
+
+        * ``progress(phase, done, total)`` is called as work advances (phases: parse, validate, entities,
+          commit); the background job API uses it for polling (P2 item 27).
 
         * ``password_hints`` (batch) and ``file_password_hints`` (per file, same order as ``files``) feed the PDF
           password generator (PDF-13). Passwords and hints stay in memory for this request only; the response,
@@ -912,7 +1014,127 @@ class CypherApplicationService:
                     prepared.append((fn, raw, pwd))
             files = prepared  # type: ignore[assignment]
         with self._case_lock(case_id):
-            return self._ingest_locked(case_id, files, template_id, execution_mode, on_duplicate)
+            return self._ingest_locked(case_id, files, template_id, execution_mode, on_duplicate, progress)
+
+    # ------------------------------------------------------------------------------------------ jobs / staged uploads
+    def stage_upload(self, case_id: str, filename: str, raw: bytes) -> Dict[str, Any]:
+        """Stage one statement file for a later ingest job (per-file upload, P2 item 27)."""
+        self._require_case(case_id)
+        return self.uploads.put(case_id, filename, raw).to_dict()
+
+    def list_staged_uploads(self, case_id: str) -> Dict[str, Any]:
+        self._require_case(case_id)
+        return {"uploads": self.uploads.list(case_id), "max_total_bytes": self.uploads.max_total_bytes}
+
+    def discard_upload(self, case_id: str, upload_id: str) -> Dict[str, Any]:
+        self._require_case(case_id)
+        self.uploads.discard(case_id, upload_id)
+        return {"discarded": upload_id}
+
+    def start_ingest_job(
+        self,
+        case_id: str,
+        files: Sequence[Mapping[str, Any]],
+        template_id: Optional[str] = None,
+        execution_mode: Optional[str] = None,
+        on_duplicate: str = "reject",
+        password_hints: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Queue :meth:`ingest_statements` as a background job and return the job record (HTTP 202).
+
+        ``files`` entries are ``{"upload_id", "password"?, "password_hints"?}`` (staged with :meth:`stage_upload`)
+        or ``{"filename", "content": bytes, "password"?, "password_hints"?}``. Arguments are validated and staged
+        files are claimed before the job is queued, so a bad request fails immediately. The job's ``result`` is
+        the same payload the synchronous upload returns.
+        """
+        if on_duplicate not in DUPLICATE_POLICIES:
+            raise ValueError(f"on_duplicate must be one of {DUPLICATE_POLICIES}")
+        if not files:
+            raise ValueError("No statement files were provided.")
+        self._require_case(case_id)
+        batch_hints = clean_password_hints(dict(password_hints) if password_hints else None)
+        staged_ids = [str(f["upload_id"]) for f in files if f.get("upload_id")]
+        for f in files:
+            if not f.get("upload_id") and not (f.get("filename") and f.get("content")):
+                raise ValueError("Each file needs an upload_id, or a filename and content")
+            clean_password_hints(dict(f["password_hints"]) if f.get("password_hints") else None)
+        staged = {u.upload_id: u for u in self.uploads.take(case_id, staged_ids)} if staged_ids else {}
+        batch: List[Tuple[str, bytes, Optional[str]]] = []
+        per_file_hints: List[Optional[Mapping[str, Any]]] = []
+        for f in files:
+            if f.get("upload_id"):
+                it = staged[str(f["upload_id"])]
+                batch.append((it.filename, it.data, f.get("password") or None))
+            else:
+                batch.append((str(f["filename"]), bytes(f["content"]), f.get("password") or None))
+            per_file_hints.append(f.get("password_hints") or None)
+        names = [b[0] for b in batch]
+
+        def run(progress: Callable[[str, int, int], None]) -> Dict[str, Any]:
+            res = self.ingest_statements(
+                case_id, batch, template_id=template_id, execution_mode=execution_mode, on_duplicate=on_duplicate,
+                password_hints=batch_hints, file_password_hints=per_file_hints if any(per_file_hints) else None,
+                progress=progress,
+            )
+            self.schedule_warmup(case_id)
+            return res
+
+        job = self.jobs.submit(
+            "ingest", case_id, run, meta={"files": names, "file_count": len(names)}, weights=INGEST_PHASE_WEIGHTS,
+        )
+        return job.to_dict()
+
+    def get_job(self, job_id: str, include_result: bool = True) -> Dict[str, Any]:
+        return self.jobs.get(job_id).to_dict(include_result=include_result)
+
+    def list_jobs(self, case_id: str) -> Dict[str, Any]:
+        self._require_case(case_id)
+        return {"jobs": [j.to_dict(include_result=False) for j in self.jobs.list(case_id=case_id)]}
+
+    def schedule_warmup(self, case_id: str) -> Optional[Dict[str, Any]]:
+        """Queue a background warm-up of the case's default analytics (debounced: at most one queued per case).
+        No-op unless the service was created with ``warm_analysis=True``."""
+        if not self.warm_analysis:
+            return None
+        pending = self.jobs.active(case_id, "warmup")
+        if pending is not None and pending.status == "queued":
+            return pending.to_dict(include_result=False)
+        job = self.jobs.submit("warmup", case_id, lambda progress: self.warm_case_analysis(case_id, progress))
+        return job.to_dict(include_result=False)
+
+    def warm_case_analysis(
+        self, case_id: str, progress: Optional[Callable[[str, int, int], None]] = None
+    ) -> Dict[str, Any]:
+        """Compute the snapshot and the analytics the UI requests by default, so they answer from the cache
+        (NFR-PERF-01: < 500 ms warm). Stops early if the case changes meanwhile. Returns per-step seconds."""
+        case_obj = self._require_case(case_id)
+        rev = self.vault.get_case_revision(case_id)
+        steps: List[Tuple[str, Callable[[], Any]]] = [
+            ("snapshot", lambda: self._snapshot(case_id)),
+            ("entity_preview", lambda: self._cluster_preview(case_id, case_obj.similarity_threshold)),
+        ]
+        if WorkspaceMode(case_obj.mode) == WorkspaceMode.CYPHER_TRACE:
+            steps += [
+                ("mules", lambda: self.get_mule_assessments(case_id)),
+                ("graph", lambda: self.get_network_graph(case_id)),
+                ("loops", lambda: self.get_loops_report(case_id)),
+                ("bidirectional", lambda: self.get_bidirectional(case_id)),
+                ("layering", lambda: self.get_layering(case_id)),
+                ("profile", lambda: self.get_financial_profile(case_id)),
+            ]
+        timings: Dict[str, float] = {}
+        for i, (name, fn) in enumerate(steps):
+            if self.vault.get_case_revision(case_id) != rev:
+                return {"revision": rev, "superseded": True, "timings": timings}
+            t0 = time.perf_counter()
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - warm-up is best effort; the request path reports real errors
+                _LOG.debug("warm-up step %s failed for %s", name, case_id, exc_info=True)
+            timings[name] = round(time.perf_counter() - t0, 3)
+            if progress is not None:
+                progress(name, i + 1, len(steps))
+        return {"revision": rev, "superseded": False, "timings": timings}
 
     def _ingest_locked(
         self,
@@ -921,9 +1143,28 @@ class CypherApplicationService:
         template_id: Optional[str],
         execution_mode: Optional[str],
         on_duplicate: str,
+        progress: Optional[Callable[[str, int, int], None]] = None,
     ) -> Dict[str, Any]:
         case_obj = self._require_case(case_id)
         t_start = dt.datetime.now(dt.timezone.utc)
+        timings: Dict[str, float] = {}
+        t_phase = time.perf_counter()
+
+        def report(phase: str, done: int, total: int) -> None:
+            if progress is not None:
+                try:
+                    progress(phase, done, total)
+                except Exception:  # noqa: BLE001 - progress reporting never breaks an ingest
+                    _LOG.debug("ingest progress callback failed", exc_info=True)
+
+        def lap(name: str) -> None:
+            nonlocal t_phase
+            now = time.perf_counter()
+            timings[name] = round(timings.get(name, 0.0) + now - t_phase, 4)
+            t_phase = now
+
+        def on_parse_progress(done: int, total: int) -> None:
+            report("parse", done, total)
 
         # 1. Evidence identity and duplicate detection before any parsing.
         digests = [hashlib.sha256(raw).hexdigest() for _fn, raw, _pwd in files]
@@ -975,17 +1216,21 @@ class CypherApplicationService:
             if stage not in telemetry.stages_invoked:
                 telemetry.stages_invoked.append(stage)
 
+        lap("prepare")
         existing_txns = self.vault.get_transactions(case_id)
         existing_ids = {t.tx_id for t in existing_txns}
         all_case_txns: List[NormalizedTransaction] = list(existing_txns)
+        dup_index = CaseDuplicateIndex(existing_txns)  # built once, extended per accepted statement (BE-06)
         audit_entries: List[Tuple[str, Dict[str, Any]]] = []
 
         # 2. Parse every non-duplicate file in isolation (process pool for large batches).
         to_parse = [i for i, st in enumerate(file_status) if st is None]
         parsed = bulk_parse_statements(
-            [files[i] for i in to_parse], case_id, draw_template=draw_tpl, return_status=True
+            [files[i] for i in to_parse], case_id, draw_template=draw_tpl, return_status=True,
+            enrich_narrations=True, on_progress=on_parse_progress,
         ) if to_parse else []
         parse_by_idx = dict(zip(to_parse, parsed))
+        lap("parse")
 
         new_statements: List[Tuple[BankAccountStatement, List[NormalizedTransaction]]] = []
         provenance: List[ProvenanceRecord] = []
@@ -994,6 +1239,7 @@ class CypherApplicationService:
         p_version = parser_version()
 
         for idx, (filename, raw_bytes, _pwd) in enumerate(files):
+            report("validate", idx, len(files))
             sha, size = digests[idx], len(raw_bytes)
             if file_status[idx] is not None:
                 fr = file_status[idx]
@@ -1008,6 +1254,9 @@ class CypherApplicationService:
                     stmt, txns, meta = res.statement, list(res.transactions), dict(res.meta)
                 else:
                     stmt, txns, meta = None, [], {"warnings": []}
+                # Rows enriched by the parse worker skip Stage 3's deterministic pass unless an LLM stage
+                # replaced or repaired them (BE-06).
+                pre_enriched = bool(meta.pop("narration_enriched", False))
 
                 # STAGE 1: vision / LLM extraction, never replacing a better deterministic parse (LLM-12)
                 if use_llm and self.llm_config.enable_stage1_vision:
@@ -1015,6 +1264,7 @@ class CypherApplicationService:
                         orchestrator, eff_mode, filename, raw_bytes, case_id, stmt, txns, all_case_txns, s1_info
                     )
                     if s1_meta is not None:
+                        pre_enriched = False
                         # The LLM rows replaced the deterministic parse: provenance and the file report must
                         # describe where the evidence rows actually came from (BE-04 chain of custody).
                         meta = {
@@ -1048,7 +1298,7 @@ class CypherApplicationService:
                     t.statement_id = stmt.statement_id
 
                 # STAGE 2: anomaly gate + reconciliation agent
-                stmt, txns, anom_counts = run_anomaly_gate(stmt, txns, existing_case_txns=all_case_txns)
+                stmt, txns, anom_counts = run_anomaly_gate(stmt, txns, existing_index=dup_index)
                 if use_llm and self.llm_config.enable_stage2_reconciliation:
                     try:
                         stmt, txns, r2 = orchestrator.stage2_agent.reconcile(
@@ -1056,12 +1306,13 @@ class CypherApplicationService:
                             force_llm=(eff_mode == "llm"),
                         )
                         if r2.get("invoked"):
+                            pre_enriched = False
                             mark(2)
                             s2_info["invoked"] = True
                             s2_info["rows_repaired"] += int(r2.get("rows_repaired", 0))
                             s2_info["repairs_rejected"] += int(r2.get("repairs_rejected", 0) or 0)
                             s2_info["metadata_updated"] = s2_info["metadata_updated"] or bool(r2.get("metadata_updated"))
-                            stmt, txns, anom_counts = run_anomaly_gate(stmt, txns, existing_case_txns=all_case_txns)
+                            stmt, txns, anom_counts = run_anomaly_gate(stmt, txns, existing_index=dup_index)
                         if r2.get("repairs_audit") or r2.get("repairs_rejected"):
                             audit_entries.append(("LLM_STAGE2_REPAIR", {
                                 "statement_id": stmt.statement_id,
@@ -1074,7 +1325,8 @@ class CypherApplicationService:
                         agent_warnings.append(f"Stage 2 Reconciliation Agent skipped: {exc}")
 
                 # STAGE 3: narration rail and counterparty extraction
-                txns = [enrich_transaction_narration(t) for t in txns]
+                if not pre_enriched:
+                    txns = [enrich_transaction_narration(t) for t in txns]
                 if use_llm and self.llm_config.enable_stage3_narration:
                     try:
                         txns, r3 = orchestrator.stage3_agent.enrich(txns, force_all=(eff_mode == "llm"))
@@ -1086,7 +1338,9 @@ class CypherApplicationService:
                         agent_warnings.append(f"Stage 3 Narration Agent skipped: {exc}")
 
                 # STAGE 4A baseline: deterministic categorisation
+                lap("validate")
                 txns = categorizer.classify_batch(txns)
+                lap("categorise")
             except Exception as exc:  # noqa: BLE001 - one bad file must not abort the batch
                 _LOG.exception("Ingest of '%s' failed", filename)
                 err = str(exc) or exc.__class__.__name__
@@ -1096,6 +1350,7 @@ class CypherApplicationService:
                 continue
 
             all_case_txns.extend(txns)
+            dup_index.extend(txns)
             new_statements.append((stmt, txns))
             telemetry.warnings.extend(agent_warnings)
             if meta.get("ocr_corrections"):
@@ -1163,6 +1418,7 @@ class CypherApplicationService:
                 "pan": getattr(stmt, "pan", None),
             }
 
+        lap("validate")
         ok_count = sum(1 for st in file_status if st is not None and st.status == "ok")
         # An empty earlier upload is replaced only when its retry actually succeeded.
         ok_shas = {st.sha256 for st in file_status if st is not None and st.status == "ok"}
@@ -1186,6 +1442,8 @@ class CypherApplicationService:
                 previous_entities=self.vault.get_entities(case_id),
             )
 
+        lap("entities")
+        report("entities", 1, 1)
         telemetry.stage_details = {"stage1": s1_info, "stage2": s2_info, "stage3": s3_info, "stage4": s4_info}
         tel_dict = telemetry.to_dict()
         final_reports = [r for r in reports if r is not None]
@@ -1217,6 +1475,8 @@ class CypherApplicationService:
         )
         try:
             self.vault.commit_ingest_batch(batch)
+            lap("commit")
+            report("commit", 1, 1)
         except ConflictError:
             raise
         except Exception as exc:
@@ -1239,6 +1499,7 @@ class CypherApplicationService:
             "total_case_transactions": len(updated_txns) if ok_count else len(existing_txns),
             "total_resolved_entities": len(entities) if entities is not None else len(self.vault.get_entities(case_id)),
             "agent_telemetry": tel_dict,
+            "timings": timings,
         }
 
     def _run_stage1(
@@ -1396,6 +1657,7 @@ class CypherApplicationService:
                             stmt, st_txns, existing_case_txns=list(rebuilt_txns), force_llm=(eff_mode == "llm")
                         )
                         if r2.get("invoked"):
+                            pre_enriched = False
                             mark(2)
                             s2_info["invoked"] = True
                             s2_info["rows_repaired"] += int(r2.get("rows_repaired", 0))
@@ -1998,8 +2260,22 @@ class CypherApplicationService:
         keyword: Optional[str] = None,
         max_amount: Optional[float] = None,
         ifsc: Optional[str] = None,
+        max_nodes: Optional[int] = None,
+        layout: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Node-capped network graph (``max_nodes``, default GRAPH_DEFAULT_MAX_NODES; ``layout`` auto|server|
+        seed|none). Centrality and summary totals always describe the full filtered graph."""
         snap = self._snapshot(case_id)
+        filters = self._graph_filters(min_amount, max_amount, ifsc)
+        if max_nodes is not None and not GRAPH_MAX_NODES_RANGE[0] <= int(max_nodes) <= GRAPH_MAX_NODES_RANGE[1]:
+            raise ValueError(f"max_nodes must be between {GRAPH_MAX_NODES_RANGE[0]} and {GRAPH_MAX_NODES_RANGE[1]}")
+        return self._graph(
+            snap, max_nodes=max_nodes, layout=layout, date_from=date_from or None, date_to=date_to or None,
+            channel_filter=(channel or "").strip() or None, keyword=(keyword or "").strip() or None, **filters,
+        )
+
+    @staticmethod
+    def _graph_filters(min_amount: float, max_amount: Optional[float], ifsc: Optional[str]) -> Dict[str, Any]:
         if max_amount is not None and float(max_amount) < float(min_amount or 0.0):
             raise ValueError("max_amount must be greater than or equal to min_amount")
         parts = [p.strip().upper() for p in (ifsc or "").split(",") if p.strip()]
@@ -2007,12 +2283,38 @@ class CypherApplicationService:
             raise ValueError(
                 "Invalid IFSC filter; use full IFSCs (e.g. SBIN0001234) or bank prefixes, comma-separated (max 20)"
             )
-        ifsc_key = ",".join(parts) or None
-        return self._graph(
-            snap, date_from=date_from, date_to=date_to, min_amount=float(min_amount),
-            channel_filter=channel, keyword=keyword,
-            max_amount=float(max_amount) if max_amount is not None else None, ifsc=ifsc_key,
+        return {
+            "min_amount": float(min_amount or 0.0),
+            "max_amount": float(max_amount) if max_amount is not None else None,
+            "ifsc": ",".join(parts) or None,
+        }
+
+    def expand_network_node(
+        self,
+        case_id: str,
+        entity_id: str,
+        limit: int = 50,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        min_amount: float = 0.0,
+        channel: Optional[str] = None,
+        keyword: Optional[str] = None,
+        max_amount: Optional[float] = None,
+        ifsc: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Expand-on-demand (TG-04): one node's heaviest ``limit`` edges and their neighbours, under the same
+        filters as the graph view. Unknown entity -> KeyError (404)."""
+        if not entity_id:
+            raise ValueError("entity_id is required")
+        if not GRAPH_EXPAND_LIMIT[0] <= int(limit) <= GRAPH_EXPAND_LIMIT[1]:
+            raise ValueError(f"limit must be between {GRAPH_EXPAND_LIMIT[0]} and {GRAPH_EXPAND_LIMIT[1]}")
+        snap = self._snapshot(case_id)
+        filters = self._graph_filters(min_amount, max_amount, ifsc)
+        full = self._graph_full(
+            snap, date_from=date_from or None, date_to=date_to or None,
+            channel_filter=(channel or "").strip() or None, keyword=(keyword or "").strip() or None, **filters,
         )
+        return graph_neighbourhood(full, entity_id, limit=int(limit), max_edge_tx_ids=GRAPH_EDGE_TX_IDS)
 
     def get_bidirectional(
         self,
@@ -2221,14 +2523,31 @@ class CypherApplicationService:
         max_cycle_length: Optional[int] = None,
         time_budget_s: Optional[float] = None,
         max_instances_per_loop: Optional[int] = None,
+        hub_degree_cap: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Loops plus detection metadata (truncated, truncation_reason, elapsed_s, max_cycle_length...)."""
+        """Loops plus detection metadata (truncated, truncation_reason, elapsed_s, max_cycle_length,
+        hub_degree_cap, excluded_hubs...). ``hub_degree_cap``: None keeps the detector default, 0 disables hub
+        exclusion. The serialised report is memoised per case revision, and the exports reuse the same loops."""
         if max_instances_per_loop is not None and not 1 <= int(max_instances_per_loop) <= 500:
             raise ValueError("max_instances_per_loop must be between 1 and 500")
+        if hub_degree_cap is not None and int(hub_degree_cap) != 0 and not 2 <= int(hub_degree_cap) <= 100_000:
+            raise ValueError("hub_degree_cap must be 0 (off) or between 2 and 100000")
+        cap: Any = "default" if hub_degree_cap is None else (None if int(hub_degree_cap) == 0 else int(hub_degree_cap))
         snap = self._snapshot(case_id)
-        result = self._loops(snap, max_days, min_retention, max_cycle_length, time_budget_s, max_instances_per_loop)
-        meta = result.meta() if hasattr(result, "meta") else {}
-        return {"loops": [lp.to_dict() for lp in result], **meta}
+        args = (
+            int(max_days), float(min_retention),
+            LOOP_DEFAULT_CYCLE_LENGTH if max_cycle_length is None else int(max_cycle_length),
+            time_budget_s,
+            LOOP_DEFAULT_MAX_INSTANCES if max_instances_per_loop is None else int(max_instances_per_loop),
+            cap,
+        )
+
+        def compute() -> Dict[str, Any]:
+            result = self._loops(snap, *args)
+            meta = result.meta() if hasattr(result, "meta") else {}
+            return {"loops": [lp.to_dict() for lp in result], **meta}
+
+        return self._memo(snap, ("loops_report",) + args, compute)
 
     def get_financial_profile(self, case_id: str, entity_id: Optional[str] = None) -> Dict[str, Any]:
         snap = self._snapshot(case_id)
@@ -2308,7 +2627,10 @@ class CypherApplicationService:
         snap = self._snapshot(case_id)
         llm_assisted, llm_provider = self._llm_provenance(case_id)
         loops = self._loops(snap)
-        graph = self._graph(snap, date_from=None, date_to=None, min_amount=0.0, channel_filter=None, keyword=None)
+        graph = self._graph(
+            snap, max_nodes=DEFAULT_MAX_DISPLAY_NODES, layout="server", max_edge_tx_ids=None, date_from=None, date_to=None,
+            channel_filter=None, keyword=None, **self._graph_filters(0.0, None, None),
+        )
         self._audit(case_id, "EXPORT_DOSSIER_HTML", {"statements": len(snap.statements), "llm_assisted": llm_assisted})
         return export_forensic_dossier_html(
             case_obj, snap.statements, list(snap.transactions), snap.entities, self._mules(snap),

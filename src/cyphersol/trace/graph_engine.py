@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import re
 from bisect import bisect_right
 import random
 from collections import defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from cyphersol.models import (
     BankAccountStatement,
@@ -83,11 +86,63 @@ def _date_ordinal(d: str) -> Optional[int]:
         return None
 
 
+_NON_ALNUM_RE = re.compile(r"[\W_]+")  # \w minus "_" is exactly str.isalnum()
+
+
 def _norm_utr(utr: Optional[str]) -> str:
-    return "".join(ch for ch in (utr or "").upper() if ch.isalnum())
+    u = (utr or "").upper()
+    return u if u.isalnum() or not u else _NON_ALNUM_RE.sub("", u)
+
+
+# Per-snapshot event memo (BE-07): graph, layering, loops, bidirectional and profile all start from the same
+# directed events. The service installs a dict for the duration of one analysis computation; calls with the same
+# inputs and filters inside that scope share one extraction. Events are never mutated by consumers.
+_EVENTS_CACHE: ContextVar[Optional[Dict[tuple, Any]]] = ContextVar("cyphersol_events_cache", default=None)
+
+
+@contextmanager
+def shared_event_cache(store: Dict[tuple, Any]) -> Iterator[None]:
+    """Reuse extracted transfer events across analytics computed from the same case snapshot."""
+    token = _EVENTS_CACHE.set(store)
+    try:
+        yield
+    finally:
+        _EVENTS_CACHE.reset(token)
 
 
 def extract_directed_transfer_events(
+    statements: List[BankAccountStatement],
+    transactions: List[NormalizedTransaction],
+    entities: List[ResolvedEntity],
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    min_amount: float = 0.0,
+    channel_filter: Optional[str] = None,
+    keyword: Optional[str] = None,
+    ifsc_filter: Optional[str] = None,
+    max_amount: Optional[float] = None,
+) -> Tuple[List[DirectedTransferEvent], Dict[str, ResolvedEntity]]:
+    cache = _EVENTS_CACHE.get()
+    if cache is None:
+        return _extract_directed_transfer_events(
+            statements, transactions, entities, date_from, date_to, min_amount, channel_filter, keyword,
+            ifsc_filter, max_amount,
+        )
+    key = (
+        "events", id(statements), len(statements), id(entities), len(entities), len(transactions),
+        id(transactions[0]) if transactions else None, id(transactions[-1]) if transactions else None,
+        date_from, date_to, float(min_amount or 0.0), channel_filter, keyword, ifsc_filter, max_amount,
+    )
+    hit = cache.get(key)
+    if hit is None:
+        hit = cache[key] = _extract_directed_transfer_events(
+            statements, transactions, entities, date_from, date_to, min_amount, channel_filter, keyword,
+            ifsc_filter, max_amount,
+        )
+    return list(hit[0]), dict(hit[1])
+
+
+def _extract_directed_transfer_events(
     statements: List[BankAccountStatement],
     transactions: List[NormalizedTransaction],
     entities: List[ResolvedEntity],
@@ -192,7 +247,16 @@ def extract_directed_transfer_events(
             )
         )
 
-    events.sort(key=lambda e: (_parse_dt(e.txn_timestamp, e.txn_date), e.event_id))
+    parsed: Dict[Tuple[str, str], dt.datetime] = {}
+
+    def sort_key(e: DirectedTransferEvent) -> Tuple[dt.datetime, str]:
+        k = (e.txn_timestamp, e.txn_date)
+        when = parsed.get(k)
+        if when is None:
+            when = parsed[k] = _parse_dt(e.txn_timestamp, e.txn_date)
+        return when, e.event_id
+
+    events.sort(key=sort_key)
     return events, entity_by_id
 
 
@@ -468,12 +532,17 @@ def build_network_graph(
     conduit_percentile: float = CONDUIT_BETWEENNESS_PERCENTILE,
     ifsc_filter: Optional[str] = None,
     max_amount: Optional[float] = None,
+    layout: str = "server",
 ) -> Dict[str, Any]:
     """
     Construct the forensic Network Graph JSON payload with nodes, weighted edges, and centrality.
     Centrality is computed on the full graph; when it has more than `max_display_nodes` nodes only the
     top-N nodes by volume (and the edges among them) are returned and laid out, with summary.truncated=True.
+    `max_display_nodes=0` returns every node. `layout`: "server" (force layout, x/y in 920x520), "seed"
+    (deterministic radial seed positions only, refined by the client) or "none" (no x/y) -- see LAYOUT_MODES.
     """
+    if layout not in LAYOUT_MODES:
+        raise ValueError(f"layout must be one of {', '.join(LAYOUT_MODES)}")
     events, entity_by_id = extract_directed_transfer_events(
         statements, transactions, entities, date_from, date_to, min_amount, channel_filter, keyword,
         ifsc_filter=ifsc_filter, max_amount=max_amount,
@@ -622,15 +691,8 @@ def build_network_graph(
         n for n in sorted(nodes_out, key=lambda x: x["betweenness"], reverse=True) if n["betweenness"] > 0
     ][:10]
 
-    truncated = max_display_nodes > 0 and total_nodes > max_display_nodes
-    if truncated:
-        nodes_out = nodes_out[:max_display_nodes]
-    kept = {n["entity_id"] for n in nodes_out}
-
     edges_out: List[Dict[str, Any]] = []
     for rec in edge_agg.values():
-        if truncated and (rec["source"] not in kept or rec["target"] not in kept):
-            continue
         edges_out.append({
             "source": rec["source"],
             "source_name": rec["source_name"],
@@ -645,9 +707,7 @@ def build_network_graph(
         })
     edges_out.sort(key=lambda e: e["total_amount"], reverse=True)
 
-    _compute_force_layout(nodes_out, edges_out)
-
-    return {
+    full = {
         "nodes": nodes_out,
         "edges": edges_out,
         "summary": {
@@ -655,7 +715,7 @@ def build_network_graph(
             "total_edges": total_edges,
             "displayed_nodes": len(nodes_out),
             "displayed_edges": len(edges_out),
-            "truncated": truncated,
+            "truncated": False,
             "max_display_nodes": max_display_nodes,
             "total_events": len(events),
             "total_volume": total_volume,
@@ -680,6 +740,94 @@ def build_network_graph(
             "colour_by": COLOUR_BY_LEGEND,
         },
         "key_intermediaries": intermediaries,
+    }
+    return slice_network_graph(full, max_display_nodes, layout=layout)
+
+
+LAYOUT_MODES = ("server", "seed", "none")
+
+
+def slice_network_graph(
+    full: Dict[str, Any],
+    max_display_nodes: int,
+    layout: str = "server",
+    max_edge_tx_ids: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Node-capped view of an uncapped graph payload (``build_network_graph(..., max_display_nodes=0,
+    layout="none")``): the top-N nodes by volume, the edges among them, laid out per `layout`. Node and edge
+    dicts are copied, so the full payload can stay cached. `max_edge_tx_ids` caps each edge's tx_ids list
+    (``tx_ids_truncated`` marks capped edges; ``tx_count`` is always the full count)."""
+    if layout not in LAYOUT_MODES:
+        raise ValueError(f"layout must be one of {', '.join(LAYOUT_MODES)}")
+    nodes = full["nodes"]
+    truncated = max_display_nodes > 0 and len(nodes) > max_display_nodes
+    nodes_out = [dict(n) for n in (nodes[:max_display_nodes] if truncated else nodes)]
+    kept = {n["entity_id"] for n in nodes_out}
+    edges_out: List[Dict[str, Any]] = []
+    for e in full["edges"]:
+        if truncated and (e["source"] not in kept or e["target"] not in kept):
+            continue
+        e2 = dict(e)
+        if max_edge_tx_ids is not None and len(e2.get("tx_ids") or ()) > max_edge_tx_ids:
+            e2["tx_ids"] = e2["tx_ids"][:max_edge_tx_ids]
+            e2["tx_ids_truncated"] = True
+        edges_out.append(e2)
+    for n in nodes_out:
+        n.pop("x", None)
+        n.pop("y", None)
+    if layout != "none":
+        _compute_force_layout(nodes_out, edges_out, iterations=0 if layout == "seed" else None)
+    shown_by_id = {n["entity_id"]: n for n in nodes_out}
+    intermediaries = [shown_by_id.get(n["entity_id"]) or dict(n) for n in full.get("key_intermediaries") or []]
+    summary = dict(full["summary"])
+    summary.update({
+        "displayed_nodes": len(nodes_out),
+        "displayed_edges": len(edges_out),
+        "truncated": truncated,
+        "max_display_nodes": max_display_nodes,
+        "layout": layout,
+    })
+    return {**full, "nodes": nodes_out, "edges": edges_out, "summary": summary, "key_intermediaries": intermediaries}
+
+
+def graph_neighbourhood(
+    full: Dict[str, Any], entity_id: str, limit: int = 50, max_edge_tx_ids: Optional[int] = None
+) -> Dict[str, Any]:
+    """Expand-on-demand (TG-04): the `limit` heaviest edges incident on `entity_id` in an uncapped graph payload,
+    with the neighbour nodes they reach (no layout; the client places them next to the expanded node)."""
+    by_id = {n["entity_id"]: n for n in full["nodes"]}
+    if entity_id not in by_id:
+        raise KeyError(f"Entity '{entity_id}' not found in this graph")
+    incident = [e for e in full["edges"] if e["source"] == entity_id or e["target"] == entity_id]
+    incident.sort(key=lambda e: e["total_amount"], reverse=True)
+    shown = incident[: max(1, int(limit))]
+    neighbour_ids: List[str] = []
+    for e in shown:
+        other = e["target"] if e["source"] == entity_id else e["source"]
+        if other not in neighbour_ids:
+            neighbour_ids.append(other)
+    edges_out = []
+    for e in shown:
+        e2 = dict(e)
+        if max_edge_tx_ids is not None and len(e2.get("tx_ids") or ()) > max_edge_tx_ids:
+            e2["tx_ids"] = e2["tx_ids"][:max_edge_tx_ids]
+            e2["tx_ids_truncated"] = True
+        edges_out.append(e2)
+    nodes_out = []
+    for nid in [entity_id] + neighbour_ids:
+        nd = dict(by_id[nid])
+        nd.pop("x", None)
+        nd.pop("y", None)
+        nodes_out.append(nd)
+    total_neighbours = len({e["target"] if e["source"] == entity_id else e["source"] for e in incident})
+    return {
+        "entity_id": entity_id,
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "total_edges": len(incident),
+        "total_neighbours": total_neighbours,
+        "truncated": len(shown) < len(incident),
+        "limit": int(limit),
     }
 
 
@@ -801,6 +949,7 @@ def _compute_force_layout(
     edges_out: List[Dict[str, Any]],
     width: float = 920.0,
     height: float = 520.0,
+    iterations: Optional[int] = None,
 ) -> None:
     """
     Compute deterministic hub-and-spoke Fruchterman-Reingold coordinates on nodes_out.
@@ -889,7 +1038,8 @@ def _compute_force_layout(
         if e["source"] in index and e["target"] in index and e["source"] != e["target"]
     ]
     exact = n <= _EXACT_REPULSION_MAX_NODES
-    iterations = 70 if exact else 40
+    if iterations is None:
+        iterations = 70 if exact else 40
     kk = k * k
 
     for it in range(iterations):

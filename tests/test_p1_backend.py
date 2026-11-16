@@ -184,7 +184,7 @@ class MigrationTests(unittest.TestCase):
             res = svc.recluster_entities(TRACE_CASE)
             new_ids = sorted(e["entity_id"] for e in res["entities"])
             self.assertEqual(new_ids, old_ids)
-            ov = svc.get_case_overview(TRACE_CASE)
+            ov = svc.get_case_overview(TRACE_CASE, tx_limit=50)
             self.assertIn("payment_channel_srs", ov["transactions"][0])
 
     def test_fresh_vault_reopen_is_idempotent(self) -> None:

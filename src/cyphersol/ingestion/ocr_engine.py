@@ -165,6 +165,42 @@ def _png_dimensions(png: bytes) -> Optional[Tuple[int, int]]:
     return (w, h) if w > 0 and h > 0 else None
 
 
+png_dimensions = _png_dimensions
+
+_PNM_HEADER_RE = re.compile(rb"^P[56](?:\s+|#[^\n]*\n)+(\d+)(?:\s+|#[^\n]*\n)+(\d+)")
+
+
+def image_dimensions(raw: bytes) -> Optional[Tuple[int, int]]:
+    """(width, height) from the image header only (PNG IHDR, BMP, binary PNM, JPEG SOF), never decoding
+    pixels (PDF-16: the pure-Python PNG decode took 12-14 s per 450-DPI page just to read the size)."""
+    if not raw:
+        return None
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return _png_dimensions(raw)
+    if raw[:2] == b"BM" and len(raw) >= 26:
+        w, h = struct.unpack_from("<ii", raw, 18)
+        return (w, abs(h)) if w > 0 and h != 0 else None
+    if raw[:2] in (b"P5", b"P6"):
+        m = _PNM_HEADER_RE.match(raw[:512])
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    if raw[:2] == b"\xff\xd8":
+        i, n = 2, len(raw)
+        while i + 9 < n:
+            if raw[i] != 0xFF:
+                i += 1
+                continue
+            marker = raw[i + 1]
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            seg_len = struct.unpack_from(">H", raw, i + 2)[0]
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                h, w = struct.unpack_from(">HH", raw, i + 5)
+                return (w, h) if w > 0 and h > 0 else None
+            i += 2 + seg_len
+    return None
+
+
 def _is_pdf_encrypted(pdf_bytes: bytes) -> bool:
     return bool(_ENCRYPT_REF_RE.search(pdf_bytes))
 
@@ -1749,9 +1785,16 @@ def ocr_image_bytes(
     "none" | "unavailable"), "confidence" (0..1 or None), "low_confidence" (bool), "rejected" (reason or None)}.
     """
     allow_glyph = glyph_ocr_allowed(image_bytes) if allow_glyph_ocr is None else allow_glyph_ocr
-    gray_info = _load_image_as_gray(image_bytes)
-    img_w = gray_info[0] if gray_info else int(page_w_pt * 2)
-    img_h = gray_info[1] if gray_info else int(page_h_pt * 2)
+    # Size from the header; the pure-Python pixel decode runs only for the glyph matcher, and never for
+    # rasters above MAX_IMAGE_PIXELS (PDF-16 / memory cap).
+    dims = image_dimensions(image_bytes)
+    gray_info = None
+    if allow_glyph and (dims is None or dims[0] * dims[1] <= MAX_IMAGE_PIXELS):
+        gray_info = _load_image_as_gray(image_bytes)
+        if gray_info is not None:
+            dims = (gray_info[0], gray_info[1])
+    img_w = dims[0] if dims else int(page_w_pt * 2)
+    img_h = dims[1] if dims else int(page_h_pt * 2)
     rejected: Optional[str] = None
     best_conf: Optional[float] = None
 

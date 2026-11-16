@@ -1,9 +1,13 @@
 /* CypherTrace network graph (#/case/{id}/network): directed fund-flow graph between resolved entities.
  *
- * Data: GET trace/graph?date_from&date_to&min_amount&max_amount&channel&keyword&ifsc (server filters, all
+ * Data: GET trace/graph?date_from&date_to&min_amount&max_amount&channel&keyword&ifsc&max_nodes (server filters, all
  * per transaction; ifsc is a comma list of up to 20 full IFSCs or bank prefixes, matched by the engine against
  * the statement account's IFSC or the counterparty IFSC in the narration; centrality is computed server-side on
- * the filtered graph; summary.filters echoes what the engine applied).
+ * the filtered graph; summary.filters echoes what the engine applied). The server sends the top max_nodes
+ * entities by volume (P2: default 400, summary.truncated); "Load more from server" doubles max_nodes and
+ * "Expand neighbours" in the inspector merges GET trace/graph/expand?entity_id&limit (the node's heaviest
+ * edges and their counterparties) into the loaded graph. Large views arrive with seed positions only
+ * (summary.layout "seed"); the client force layout places them.
  * Colours: each node's colour_keys{role, statement, risk_tier, betweenness} (P1, TG-07) pick the fill, and the
  * legend lists summary.colour_by[mode] — the server owns the bins, so the UI never re-derives a tier. Client-side refinements: conduit focus (legacy "conduits only"), neighbourhood isolation and a node cap with
  * "show more". The date window comes from a time brush over the case's statement activity
@@ -33,6 +37,9 @@ import { createGraphCanvas, createTimeBrush } from "../charts/graph-canvas.js";
 export const styles = ["views/network.css"];
 
 const CAP_STEP = 150;
+const SERVER_NODES = 400; // trace/graph max_nodes default (server: GRAPH_DEFAULT_MAX_NODES)
+const SERVER_NODES_MAX = 5000;
+const EXPAND_LIMIT = 50;
 const ROLE_ORDER = { PERIPHERAL_LEAF: 0, EXIT_ENDPOINT: 1, PRIMARY_HUB: 2, BRIDGE_CONDUIT: 3 };
 const COLOR_MODES = [
   { id: "role", label: "Role" },
@@ -111,6 +118,8 @@ export async function mount(el, ctx) {
     conduits: p.conduits === "1",
     ego: p.ego === "1",
     cap: Math.max(CAP_STEP, Number(p.cap) || CAP_STEP),
+    serverNodes: SERVER_NODES,
+    expanded: new Set(), // entity ids merged by "Expand neighbours"; always shown, beyond the cap
     selected: p.entity || null,
     graph: null,
     view: null,
@@ -407,11 +416,13 @@ export async function mount(el, ctx) {
       if (state.selected) touched.add(state.selected);
       filtered = all.filter((n) => touched.has(n.entity_id));
     }
-    // node cap: the server sorts nodes by volume; keep the selection visible even beyond the cap
+    // node cap: the server sorts nodes by volume; keep the selection and expanded nodes visible beyond the cap
     let shown = filtered.slice(0, state.cap);
-    if (state.selected && !shown.some((n) => n.entity_id === state.selected)) {
-      const sel = filtered.find((n) => n.entity_id === state.selected);
-      if (sel) shown = [...shown, sel];
+    const extra = new Set(state.expanded);
+    if (state.selected) extra.add(state.selected);
+    if (extra.size) {
+      const have = new Set(shown.map((n) => n.entity_id));
+      shown = [...shown, ...filtered.filter((n) => extra.has(n.entity_id) && !have.has(n.entity_id))];
     }
     const shownIds = new Set(shown.map((n) => n.entity_id));
     const filteredIds = new Set(filtered.map((n) => n.entity_id));
@@ -476,7 +487,7 @@ export async function mount(el, ctx) {
       )
     );
     const notes = [];
-    if (s.truncated) notes.push(html`The server returned the ${int(s.displayed_nodes)} highest-volume of ${int(s.total_nodes)} entities; centrality was computed on the full graph.`);
+    if (s.truncated) notes.push(html`The server returned the ${int(s.displayed_nodes)} highest-volume of ${int(s.total_nodes)} entities; centrality was computed on the full graph. Use “Expand neighbours” on an entity, or load more from the server.`);
     if (s.betweenness_sampled) notes.push(html`Betweenness is approximated from ${int(s.betweenness_samples)} sampled sources.`);
     const applied = describeApplied(state.graph?.summary?.filters);
     if (applied.length) notes.push(html`Engine filters applied: ${applied.join(" · ")}. Centrality and roles are computed on this filtered graph.`);
@@ -499,9 +510,16 @@ export async function mount(el, ctx) {
   function drawCap() {
     const v = state.view;
     const hidden = v.filtered.length - v.nodes.length;
+    const s = state.graph?.summary || {};
+    const serverHidden = s.truncated ? Math.max(0, (s.total_nodes || 0) - (s.displayed_nodes || 0)) : 0;
     render(
       gslot("cap"),
-      hidden > 0
+      hidden <= 0 && serverHidden > 0 && state.serverNodes < SERVER_NODES_MAX
+        ? html`<div class="v-network-cap" role="status">
+            <span>${icon("info", { size: "sm" })} ${int(serverHidden)} lower-volume entities were not loaded.</span>
+            <button type="button" class="btn btn--sm btn--subtle" data-action="server-more">Load ${int(Math.min(serverHidden, Math.min(SERVER_NODES_MAX, state.serverNodes * 2) - state.serverNodes))} more from server</button>
+          </div>`
+        : hidden > 0
         ? html`<div class="v-network-cap" role="status">
             <span>${icon("info", { size: "sm" })} Showing the ${int(v.nodes.length)} highest-volume of ${int(v.filtered.length)} entities.</span>
             <button type="button" class="btn btn--sm btn--subtle" data-action="more">Show ${int(Math.min(CAP_STEP, hidden))} more</button>
@@ -626,6 +644,7 @@ export async function mount(el, ctx) {
       <div class="row row-wrap">
         <button type="button" class="chip" data-action="ego" aria-pressed="${state.ego ? "true" : "false"}">Isolate neighbourhood</button>
         <button type="button" class="chip" data-action="center">${icon("eye", { size: "sm" })}Centre in graph</button>
+        ${canExpand(n) ? html`<button type="button" class="chip" data-action="expand" data-id="${n.entity_id}" title="Load this entity's ${EXPAND_LIMIT} heaviest flows and their counterparties">${icon("plus", { size: "sm" })}Expand neighbours</button>` : ""}
       </div>
       ${counterparties(n.entity_id)}
     </div>`;
@@ -774,12 +793,45 @@ export async function mount(el, ctx) {
   /* ------------------------------------------------------------------ loading */
   let loadCtl = null;
   ctx.onCleanup(() => loadCtl?.abort());
-  function serverParams() {
+  function filterParams() {
     const f = state.f;
     return {
       date_from: f.date_from, date_to: f.date_to, min_amount: posNum(f.amount_min) || "", max_amount: posNum(f.amount_max) || "",
       channel: f.channel, keyword: f.q.trim(), ifsc: ifscList(f.ifsc).join(","),
     };
+  }
+  function serverParams() {
+    return { ...filterParams(), max_nodes: state.serverNodes };
+  }
+
+  /** True when the loaded graph may be missing some of this node's flows (server node cap). */
+  function canExpand(n) {
+    if (!state.graph?.summary?.truncated) return false;
+    const known = (state.graph.edges || []).filter((e) => e.source === n.entity_id || e.target === n.entity_id).length;
+    return known < (n.in_degree || 0) + (n.out_degree || 0);
+  }
+
+  /** Merge GET trace/graph/expand (one node's heaviest edges + neighbours) into the loaded graph. */
+  async function expandNode(id, btn) {
+    if (!id || !state.graph) return;
+    if (btn) btn.disabled = true;
+    try {
+      const res = await ctx.api.get("trace/graph/expand", { ...filterParams(), entity_id: id, limit: EXPAND_LIMIT }, { signal: ctx.signal });
+      if (!ctx.isCurrent() || !state.graph) return;
+      const nodes = state.graph.nodes || [];
+      const have = new Set(nodes.map((n) => n.entity_id));
+      const added = (res.nodes || []).filter((n) => !have.has(n.entity_id));
+      const edgeSet = new Set((state.graph.edges || []).map(edgeKey));
+      const newEdges = (res.edges || []).filter((e) => !edgeSet.has(edgeKey(e)));
+      state.graph = { ...state.graph, nodes: [...nodes, ...added], edges: [...(state.graph.edges || []), ...newEdges] };
+      (res.nodes || []).forEach((n) => state.expanded.add(n.entity_id));
+      rebuild({ keepView: true });
+      ctx.toast?.info?.(`Added ${plural(added.length, "entity", "entities")} and ${plural(newEdges.length, "flow")}${res.truncated ? ` (heaviest ${int(res.limit)} of ${int(res.total_edges)})` : ""}.`);
+    } catch (err) {
+      if (!isAbort(err) && ctx.isCurrent()) ctx.toast?.error?.(err, { title: "Could not expand this entity" });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
   async function load({ keepView = false } = {}) {
     loadCtl?.abort();
@@ -880,6 +932,7 @@ export async function mount(el, ctx) {
     const clientChanged = CLIENT_KEYS.some((k) => (next[k] || "") !== (state.f[k] || ""));
     state.f = next;
     ctx.setParams(Object.fromEntries([...SERVER_KEYS, ...CLIENT_KEYS].map((k) => [k, next[k] || null])));
+    if (serverChanged) state.expanded.clear(); // expansions belong to the previous filter set
     if (serverChanged) load();
     else if (clientChanged) rebuild();
   }
@@ -916,6 +969,8 @@ export async function mount(el, ctx) {
 
   function resetFilters() {
     state.f = { date_from: "", date_to: "", amount_min: "", channel: "", q: "", amount_max: "", ifsc: "" };
+    state.expanded.clear();
+    state.serverNodes = SERVER_NODES;
     state.conduits = false;
     state.ego = false;
     state.cap = CAP_STEP;
@@ -993,6 +1048,14 @@ export async function mount(el, ctx) {
       case "relayout":
         graph.setPaused(false);
         graph.reheat();
+        break;
+      case "server-more":
+        state.serverNodes = Math.min(SERVER_NODES_MAX, state.serverNodes * 2);
+        state.cap = Math.max(state.cap, state.view?.filtered.length || 0);
+        load({ keepView: true });
+        break;
+      case "expand":
+        expandNode(b.dataset.id, b);
         break;
       case "more":
         state.cap += CAP_STEP;

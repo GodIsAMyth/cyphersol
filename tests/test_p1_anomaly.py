@@ -8,7 +8,7 @@ import sys
 import unittest
 from decimal import Decimal
 
-ROOT_DIR = "/Users/manu/Library/CloudStorage/OneDrive-Personal/AML"
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_DIR = os.path.join(ROOT_DIR, "src")
 TESTS_DIR = os.path.join(ROOT_DIR, "tests")
 for _p in (SRC_DIR, TESTS_DIR):

@@ -46,6 +46,8 @@ TALLY_HOSTS_ENV = "CYPHERSOL_TALLY_HOSTS"
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 _NOT_FOUND_RE = re.compile(r"\bnot found\b", re.IGNORECASE)
+# Case POST routes that do not change case data (or schedule their own warm-up).
+_NO_WARMUP_POSTS = frozenset({"pdf-preview", "ingest-jobs", "edge/tally-push"})
 
 # P3 UI: explicit static MIME types (mimetypes can be wrong or missing on some hosts, and native ES modules
 # are refused unless served with a JavaScript MIME type).
@@ -338,6 +340,7 @@ def create_http_handler(
                 status in (400, 403, 411, 413, 415) and not self._body_consumed
             ):
                 self.close_connection = True
+            self._last_status = status
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
@@ -543,15 +546,24 @@ def create_http_handler(
                 if path == "/api/cases":
                     return self._send_json(200, {"cases": service.list_cases()})
 
+                job_m = re.match(r"^/api/jobs/([0-9a-f]{32})$", path)
+                if job_m:
+                    inc = qbool("include_result")
+                    return self._send_json(200, service.get_job(job_m.group(1), include_result=inc is not False))
+
                 # Case-scoped GET routes
                 m = re.match(r"^/api/cases/([^/]+)/(.+)$", path)
                 if m:
                     cid, sub = m.group(1), m.group(2)
+                    if sub == "jobs":
+                        return self._send_json(200, service.list_jobs(cid))
+                    if sub == "uploads":
+                        return self._send_json(200, service.list_staged_uploads(cid))
                     if sub == "overview":
                         return self._send_json(
                             200,
                             service.get_case_overview(
-                                cid, tx_offset=qint("tx_offset", 0), tx_limit=qint("tx_limit", 500)
+                                cid, tx_offset=qint("tx_offset", 0), tx_limit=qint("tx_limit", 0)
                             ),
                         )
                     if sub == "transactions":
@@ -641,6 +653,24 @@ def create_http_handler(
                                 keyword=qstr("keyword"),
                                 max_amount=qfloat_opt("max_amount"),
                                 ifsc=qstr("ifsc"),
+                                max_nodes=qint_opt("max_nodes"),
+                                layout=qstr("layout"),
+                            ),
+                        )
+                    if sub == "trace/graph/expand":
+                        return self._send_json(
+                            200,
+                            service.expand_network_node(
+                                cid,
+                                entity_id=qstr("entity_id") or "",
+                                limit=qint("limit", 50),
+                                date_from=qstr("date_from"),
+                                date_to=qstr("date_to"),
+                                min_amount=qfloat("min_amount", 0.0),
+                                channel=qstr("channel"),
+                                keyword=qstr("keyword"),
+                                max_amount=qfloat_opt("max_amount"),
+                                ifsc=qstr("ifsc"),
                             ),
                         )
                     if sub == "trace/bidirectional":
@@ -697,6 +727,7 @@ def create_http_handler(
                                 min_retention=qfloat("min_retention", 0.50),
                                 max_cycle_length=qint("max_cycle_length", 6) if mcl is not None else None,
                                 max_instances_per_loop=qint_opt("max_instances_per_loop"),
+                                hub_degree_cap=qint_opt("hub_degree_cap"),
                             ),
                         )
                     if sub == "trace/profile":
@@ -778,6 +809,21 @@ def create_http_handler(
             return self.do_POST()
 
         def do_POST(self) -> None:
+            self._last_status = None
+            self._do_post()
+            # Keep the analysis cache warm after a successful case mutation (P2: warm cache, BE-07). Read-only
+            # POSTs and the ingest job (which schedules its own warm-up) are skipped.
+            m = re.match(r"^/api/cases/([^/]+)/(.+)$", urlparse(self.path).path)
+            if m and self._last_status is not None and 200 <= self._last_status < 300 and m.group(2) not in _NO_WARMUP_POSTS \
+                    and not m.group(2).startswith("uploads"):
+                try:
+                    service.schedule_warmup(m.group(1))
+                except Exception:  # noqa: BLE001 - warm-up is best effort
+                    logger.debug("warm-up scheduling failed", exc_info=True)
+
+        _last_status: Optional[int] = None
+
+        def _do_post(self) -> None:
             self._body_consumed = False
             parsed = urlparse(self.path)
             path = parsed.path
@@ -884,6 +930,52 @@ def create_http_handler(
                             file_password_hints=file_hints if any(file_hints) else None,
                         )
                         return self._send_json(200, res)
+
+                    if sub == "uploads":
+                        # Per-file staging (P2 item 27): one file per request, consumed by an ingest job.
+                        raw = base64.b64decode(str(_json_body_field(body, "content_b64")))
+                        staged = service.stage_upload(cid, str(_json_body_field(body, "filename")), raw)
+                        return self._send_json(201, staged)
+
+                    up_discard = re.match(r"^uploads/([0-9a-f]{32})/discard$", sub)
+                    if up_discard:
+                        return self._send_json(200, service.discard_upload(cid, up_discard.group(1)))
+
+                    if sub == "ingest-jobs":
+                        specs = []
+                        files_payload = body.get("files", [])
+                        if not isinstance(files_payload, list) or not files_payload:
+                            raise BadRequest("'files' must be a non-empty list")
+                        for fitem in files_payload:
+                            if not isinstance(fitem, dict):
+                                raise BadRequest("Each file entry must be an object")
+                            pwd = fitem.get("password")
+                            if pwd is not None and not isinstance(pwd, str):
+                                raise BadRequest("'password' must be a string")
+                            fh = fitem.get("password_hints")
+                            if fh is not None and not isinstance(fh, dict):
+                                raise BadRequest("'password_hints' must be an object")
+                            spec: Dict[str, Any] = {"password": pwd or None, "password_hints": fh}
+                            if fitem.get("upload_id") is not None:
+                                if not isinstance(fitem["upload_id"], str):
+                                    raise BadRequest("'upload_id' must be a string")
+                                spec["upload_id"] = fitem["upload_id"]
+                            else:
+                                spec["filename"] = str(_json_body_field(fitem, "filename"))
+                                spec["content"] = base64.b64decode(str(_json_body_field(fitem, "content_b64")))
+                            specs.append(spec)
+                        batch_hints = body.get("password_hints")
+                        if batch_hints is not None and not isinstance(batch_hints, dict):
+                            raise BadRequest("'password_hints' must be an object")
+                        job = service.start_ingest_job(
+                            cid,
+                            specs,
+                            template_id=body.get("template_id"),
+                            execution_mode=body.get("execution_mode"),
+                            on_duplicate=str(body.get("on_duplicate") or "reject"),
+                            password_hints=batch_hints,
+                        )
+                        return self._send_json(202, job)
 
                     if sub == "run-agents":
                         res = service.run_case_llm_agents(
@@ -1019,13 +1111,19 @@ def run_server(
     sample_dir: str = "sample_statements",
     llm_transport_fn: Optional[Any] = None,
     api_token: Optional[str] = None,
+    warm_analysis: Optional[bool] = None,
 ) -> ThreadingHTTPServer:
-    """Create (not start) the HTTP server. A fresh per-launch API token is generated unless one is given."""
+    """Create (not start) the HTTP server. A fresh per-launch API token is generated unless one is given.
+    ``warm_analysis`` (default on; ``CYPHERSOL_WARM_ANALYSIS=0`` turns it off) precomputes the default analytics
+    in the background after ingests and mutations."""
+    if warm_analysis is None:
+        warm_analysis = os.environ.get("CYPHERSOL_WARM_ANALYSIS", "1").strip().lower() not in ("0", "false", "no")
     service = CypherApplicationService(
         db_path=db_path,
         sample_dir=sample_dir,
         seed_demo=True,
         llm_transport_fn=llm_transport_fn,
+        warm_analysis=warm_analysis,
     )
     ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
     handler_cls = create_http_handler(service, ui_dir, api_token=api_token)
