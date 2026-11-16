@@ -134,7 +134,7 @@ class CypherSolTestSuite(unittest.TestCase):
         self.assertEqual(parsed.utr_number, "409110012345")
 
         # Verify Demo CypherEdge case has Suspense entries and resolves + auto-learns
-        edge_over = self.service.get_case_overview("CASE_EDGE_BALAJI_FY25")
+        edge_over = self.service.get_case_overview("CASE_EDGE_BALAJI_FY25", tx_limit=500)
         self.assertGreater(edge_over["summary"]["suspense_count"], 0)
         suspense_tx = next(t for t in edge_over["transactions"] if t["is_suspense"])
         res = self.service.resolve_suspense(

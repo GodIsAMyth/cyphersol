@@ -24,6 +24,10 @@ DEFAULT_CYCLE_LENGTH = 8  # FR-TRACE-04: cycles of 2 to 8 hops by default (BE-09
 DEFAULT_TIME_BUDGET_S = 5.0
 DEFAULT_MAX_CYCLES = 1000
 DEFAULT_MAX_INSTANCES_PER_LOOP = 50
+# Hub exclusion (BE-09): a party with more distinct counterparties than this (a payment aggregator, merchant or
+# utility) multiplies the search space without being a plausible round-tripping intermediary. Excluded hubs are
+# listed in the result metadata; pass hub_degree_cap=None to search through them.
+DEFAULT_HUB_DEGREE_CAP = 250
 _BUDGET_CHECK_EVERY = 2048
 _EPOCH = dt.datetime(1970, 1, 1)
 
@@ -41,6 +45,8 @@ class LoopDetectionResult(list):
         self.elapsed_s: float = float(meta.get("elapsed_s", 0.0))
         self.max_cycle_length: int = int(meta.get("max_cycle_length", DEFAULT_CYCLE_LENGTH))
         self.candidate_events: int = int(meta.get("candidate_events", 0))
+        self.excluded_hubs: List[Dict[str, Any]] = list(meta.get("excluded_hubs") or [])
+        self.hub_degree_cap: Optional[int] = meta.get("hub_degree_cap")
 
     def meta(self) -> Dict[str, Any]:
         return {
@@ -50,6 +56,8 @@ class LoopDetectionResult(list):
             "max_cycle_length": self.max_cycle_length,
             "candidate_events": self.candidate_events,
             "loop_count": len(self),
+            "hub_degree_cap": self.hub_degree_cap,
+            "excluded_hubs": self.excluded_hubs,
         }
 
 
@@ -209,6 +217,7 @@ def detect_circular_loops(
     time_budget_s: Optional[float] = DEFAULT_TIME_BUDGET_S,
     max_cycles: int = DEFAULT_MAX_CYCLES,
     max_instances_per_loop: int = DEFAULT_MAX_INSTANCES_PER_LOOP,
+    hub_degree_cap: Optional[int] = DEFAULT_HUB_DEGREE_CAP,
 ) -> LoopDetectionResult:
     """
     Detect temporally valid circular transaction loops (A -> B -> C -> A):
@@ -224,7 +233,8 @@ def detect_circular_loops(
     instances (chronological), `instance_count` counts all found and `disjoint_instance_count` the greedy
     maximum of stored instances sharing no transaction (TF-14). Hops carry date, UTR and per-intermediary
     leakage (TF-13). The search stops at `time_budget_s` seconds or `max_cycles` signatures and sets
-    `result.truncated`.
+    `result.truncated`. Parties with more than `hub_degree_cap` distinct counterparties are excluded and reported
+    in `result.excluded_hubs` (BE-09).
     """
     started = time.monotonic()
     cycle_len = max_hops if max_cycle_length is None else max_cycle_length
@@ -241,12 +251,33 @@ def detect_circular_loops(
     if max_instances_per_loop is None or int(max_instances_per_loop) < 1:
         raise ValueError("max_instances_per_loop must be >= 1")
     inst_cap = int(max_instances_per_loop)
+    if hub_degree_cap is not None and int(hub_degree_cap) < 2:
+        raise ValueError("hub_degree_cap must be >= 2 (or None to disable hub exclusion)")
 
     events, entity_by_id = extract_directed_transfer_events(statements, transactions, entities)
     events = [
         ev for ev in events
         if ev.src_entity_id != ev.dst_entity_id and not ev.src_is_system and not ev.dst_is_system and ev.amount > 0
     ]
+
+    # Hub exclusion: parties with very many distinct counterparties (BE-09)
+    excluded_hubs: List[Dict[str, Any]] = []
+    if hub_degree_cap is not None:
+        neigh: Dict[str, Set[str]] = defaultdict(set)
+        for ev in events:
+            neigh[ev.src_entity_id].add(ev.dst_entity_id)
+            neigh[ev.dst_entity_id].add(ev.src_entity_id)
+        hubs = {n for n, nb in neigh.items() if len(nb) > int(hub_degree_cap)}
+        if hubs:
+            excluded_hubs = sorted(
+                (
+                    {"entity_id": n, "name": entity_by_id[n].canonical_name if n in entity_by_id else n,
+                     "degree": len(neigh[n])}
+                    for n in hubs
+                ),
+                key=lambda h: (-h["degree"], h["entity_id"]),
+            )
+            events = [ev for ev in events if ev.src_entity_id not in hubs and ev.dst_entity_id not in hubs]
 
     # Structural pruning: only events inside a non-trivial strongly connected component can lie on a cycle
     struct: Dict[str, Set[str]] = defaultdict(set)
@@ -440,4 +471,6 @@ def detect_circular_loops(
         elapsed_s=time.monotonic() - started,
         max_cycle_length=cycle_len,
         candidate_events=len(events),
+        excluded_hubs=excluded_hubs,
+        hub_degree_cap=int(hub_degree_cap) if hub_degree_cap is not None else None,
     )

@@ -201,7 +201,12 @@ export async function mount(el, ctx) {
 
   function drawMeta() {
     if (!data) return;
-    slot("meta").textContent = `Scanned ${int(data.candidate_events)} candidate transfers in ${Number(data.elapsed_s || 0).toFixed(2)} s · max ${int(data.max_cycle_length ?? p.max_cycle_length)} hops · system parties (cash, charges, unresolved) excluded.`;
+    const hubs = data.excluded_hubs || [];
+    // P2 (BE-09): parties with more distinct counterparties than hub_degree_cap are skipped by the scan.
+    const hubNote = hubs.length
+      ? ` · ${plural(hubs.length, "hub")} with > ${int(data.hub_degree_cap)} counterparties excluded (${hubs.slice(0, 3).map((h) => h.name).join(", ")}${hubs.length > 3 ? ", …" : ""})`
+      : "";
+    slot("meta").textContent = `Scanned ${int(data.candidate_events)} candidate transfers in ${Number(data.elapsed_s || 0).toFixed(2)} s · max ${int(data.max_cycle_length ?? p.max_cycle_length)} hops · system parties (cash, charges, unresolved) excluded${hubNote}.`;
   }
 
   function drawKpis() {

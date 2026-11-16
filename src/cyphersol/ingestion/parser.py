@@ -14,7 +14,7 @@ import pickle
 import re
 import time
 import uuid
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -2686,14 +2686,19 @@ class BulkIngestError(ValueError):
         super().__init__(f"{len(failed)} of {len(results)} statement file(s) failed to parse: {detail}{more}")
 
 
-_BulkJob = Tuple[str, bytes, Optional[str], str, Optional[DrawTemplate]]
+_BulkJob = Tuple[str, bytes, Optional[str], str, Optional[DrawTemplate], bool]
 
 
 def _parse_file_job(job: _BulkJob) -> FileParseResult:
-    filename, raw, password, case_id, draw_template = job
+    filename, raw, password, case_id, draw_template, enrich = job
     t0 = time.perf_counter()
     try:
         stmt, txns, meta = parse_statement_bytes(filename, raw, case_id, password, draw_template)
+        if enrich:
+            # Narration parsing is pure per-row regex work: doing it here spreads it over the pool (BE-06).
+            for t in txns:
+                enrich_transaction_narration(t)
+            meta["narration_enriched"] = True
         return FileParseResult(filename, True, stmt, txns, meta, elapsed_s=time.perf_counter() - t0)
     except Exception as exc:  # noqa: BLE001 - isolating one bad file from the batch is the purpose
         return FileParseResult(
@@ -2705,9 +2710,34 @@ def _parse_file_job(job: _BulkJob) -> FileParseResult:
         )
 
 
-def _run_bulk_jobs(jobs: List[_BulkJob], max_workers: Optional[int], use_processes: Optional[bool]) -> List[FileParseResult]:
+def _notify(on_progress: Optional[Any], done: int, total: int) -> None:
+    if on_progress is not None:
+        try:
+            on_progress(done, total)
+        except Exception:  # noqa: BLE001 - a progress callback must never break parsing
+            _LOG.debug("bulk ingest progress callback failed", exc_info=True)
+
+
+def _ordered_map(pool: Any, jobs: List[_BulkJob], on_progress: Optional[Any]) -> List[FileParseResult]:
+    """Submit every job, report progress as each finishes, return results in input order."""
+    futures = [pool.submit(_parse_file_job, j) for j in jobs]
+    index = {f: i for i, f in enumerate(futures)}
+    out: List[Optional[FileParseResult]] = [None] * len(jobs)
+    done = 0
+    for fut in as_completed(futures):
+        out[index[fut]] = fut.result()
+        done += 1
+        _notify(on_progress, done, len(jobs))
+    return out  # type: ignore[return-value]
+
+
+def _run_bulk_jobs(
+    jobs: List[_BulkJob], max_workers: Optional[int], use_processes: Optional[bool], on_progress: Optional[Any] = None
+) -> List[FileParseResult]:
     if len(jobs) <= 1:
-        return [_parse_file_job(j) for j in jobs]
+        out = [_parse_file_job(j) for j in jobs]
+        _notify(on_progress, len(out), len(jobs))
+        return out
     cpu = os.cpu_count() or 2
     want_processes = len(jobs) >= PROCESS_POOL_MIN_FILES if use_processes is None else use_processes
     if want_processes and cpu > 1:
@@ -2715,13 +2745,12 @@ def _run_bulk_jobs(jobs: List[_BulkJob], max_workers: Optional[int], use_process
         try:
             ctx = multiprocessing.get_context("spawn")  # fork is unsafe in threaded servers and with macOS frameworks
             with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
-                chunk = max(1, len(jobs) // (workers * 4))
-                return list(pool.map(_parse_file_job, jobs, chunksize=chunk))
+                return _ordered_map(pool, jobs, on_progress)
         except (pickle.PicklingError, BrokenProcessPool, OSError, NotImplementedError, AttributeError, TypeError, EOFError, ImportError) as exc:
             _LOG.warning("Process pool unavailable for bulk ingest (%s: %s); falling back to threads.", exc.__class__.__name__, exc)
     workers = max(1, min(max_workers or 4, len(jobs)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(_parse_file_job, jobs))
+        return _ordered_map(pool, jobs, on_progress)
 
 
 def bulk_parse_statements(
@@ -2731,17 +2760,21 @@ def bulk_parse_statements(
     max_workers: Optional[int] = None,
     return_status: bool = False,
     use_processes: Optional[bool] = None,
+    enrich_narrations: bool = False,
+    on_progress: Optional[Any] = None,
 ) -> List[Any]:
     """
     Bulk ingestion for 100+ statements. Each file is parsed in isolation; a process pool is used for
     `PROCESS_POOL_MIN_FILES`+ files (falling back to threads when processes or pickling are unavailable).
 
     `return_status=True` returns one `FileParseResult` per input file, in order, including failures.
+    `enrich_narrations=True` also runs the narration parser on every row inside the worker and sets
+    ``meta['narration_enriched']``. `on_progress(done, total)` is called as files finish (in the caller's thread).
     The legacy default returns `(statement, transactions, meta)` tuples and, if any file failed, raises
     `BulkIngestError` *after* all files were attempted; its `.results` holds every per-file outcome.
     """
-    jobs: List[_BulkJob] = [(fn, raw, pwd, case_id, draw_template) for fn, raw, pwd in files]
-    results = _run_bulk_jobs(jobs, max_workers, use_processes)
+    jobs: List[_BulkJob] = [(fn, raw, pwd, case_id, draw_template, bool(enrich_narrations)) for fn, raw, pwd in files]
+    results = _run_bulk_jobs(jobs, max_workers, use_processes, on_progress)
     if return_status:
         return results
     if any(not r.ok for r in results):

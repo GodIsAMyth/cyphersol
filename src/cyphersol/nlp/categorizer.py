@@ -30,7 +30,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from cyphersol.models import NormalizedTransaction
 from cyphersol.nlp.narration_parser import SRS_CHANNEL_EXTENSIONS, SRS_PAYMENT_CHANNELS, internal_payment_channel, srs_payment_channel
@@ -853,7 +853,7 @@ class HybridTransactionCategorizer:
         direction: str,
         chosen: Optional[Tuple[int, float]],
         kb_hits: Sequence[Tuple[float, int, int, int]],
-        ml_ranked: Sequence[Tuple[int, float, int]],
+        ml_ranked: Union[Sequence[Tuple[int, float, int]], Callable[[], Sequence[Tuple[int, float, int]]]],
     ) -> Tuple[Tuple[int, float], ...]:
         out: List[Tuple[int, float]] = []
         seen: Set[int] = set()
@@ -869,13 +869,20 @@ class HybridTransactionCategorizer:
             push(*chosen)
         for conf, _n, _l, cid in kb_hits:
             push(cid, conf)
-        for cid, conf, _ev in ml_ranked:
+        if len(out) >= 3:
+            return tuple(out)  # the ML ranking cannot change a full top-3, so it is never computed (BE-06)
+        for cid, conf, _ev in (ml_ranked() if callable(ml_ranked) else ml_ranked):
             push(cid, conf)
+            if len(out) >= 3:
+                return tuple(out)
         floor = round(1.0 / max(1, len(self._nb.allowed[direction])), 4)
         for cid in _FALLBACK_SUGGESTIONS[direction]:
             push(cid, floor)
-        for cid in self._nb.allowed[direction]:
-            push(cid, floor)
+        if len(out) < 3:
+            for cid in self._nb.allowed[direction]:
+                push(cid, floor)
+                if len(out) >= 3:
+                    break
         return tuple(out)
 
     def _classify_uncached(self, tx: NormalizedTransaction) -> _Result:
@@ -893,10 +900,18 @@ class HybridTransactionCategorizer:
 
         hay = _tokens(f"{tx.raw_narration or ''} {cp} {ident}")
         kb_hits = self._kb.hits(hay, d, self._gate_person_tokens(cp_tokens, person, on_rail, ident))
-        ml_tokens = ml_feature_tokens(tx)
-        # Tabular tokens only matter when the text gives the ML tier something to rank
-        self._last_tab_sensitive = self._nb.has_text_evidence(ml_tokens)
-        ml_ranked = self._nb.rank(ml_tokens, d, self._tab_tokens(tx) if self._last_tab_sensitive else ())
+        # The ML tier is evaluated lazily: only on a Tier 1 miss, or when the top-3 suggestions need it (BE-06).
+        # A row whose ML ranking was never computed cannot depend on the tabular tokens.
+        self._last_tab_sensitive = False
+        ml_memo: List[Sequence[Tuple[int, float, int]]] = []
+
+        def ml_ranked() -> Sequence[Tuple[int, float, int]]:
+            if not ml_memo:
+                ml_tokens = ml_feature_tokens(tx)
+                # Tabular tokens only matter when the text gives the ML tier something to rank
+                self._last_tab_sensitive = self._nb.has_text_evidence(ml_tokens)
+                ml_memo.append(self._nb.rank(ml_tokens, d, self._tab_tokens(tx) if self._last_tab_sensitive else ()))
+            return ml_memo[0]
 
         def decided(cid: int, conf: float, source: str, ledger: Optional[str] = None) -> _Result:
             conf = round(conf, 3)
@@ -926,8 +941,8 @@ class HybridTransactionCategorizer:
 
         # 4/5. ML only where it is allowed to decide: not a bare P2P transfer, enough class evidence,
         #      never a contra category (those need deterministic evidence)
-        if not p2p and ml_ranked:
-            cid, conf, ev = ml_ranked[0]
+        if not p2p and ml_ranked():
+            cid, conf, ev = ml_ranked()[0]
             if conf >= tau and ev >= _NaiveBayes.MIN_CLASS_EVIDENCE and cid not in CONTRA_CATEGORY_IDS:
                 return decided(cid, conf, "ML_MODEL")
 

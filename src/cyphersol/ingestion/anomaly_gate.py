@@ -60,13 +60,22 @@ def duplicate_signature(tx: NormalizedTransaction, account_fallback: str = "") -
 
 
 class _DuplicateIndex:
-    """Signatures seen so far; base key -> list of (reference, tx_id)."""
+    """Signatures seen so far; base key -> list of (reference, tx_id).
 
-    def __init__(self) -> None:
+    An index may sit on top of a read-only ``base`` index (the rest of the case), so a bulk ingest builds the
+    case-wide signatures once and each statement only adds its own rows to a small overlay (BE-06).
+    """
+
+    def __init__(self, base: Optional["_DuplicateIndex"] = None) -> None:
         self._seen: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
+        self._base = base
 
     def match(self, sig: DuplicateSignature) -> Optional[str]:
         """tx_id of an earlier row this signature duplicates, else None."""
+        if self._base is not None:
+            hit = self._base.match(sig)
+            if hit is not None:
+                return hit
         for ref, tx_id in self._seen.get(sig[:-1], ()):
             if not ref or not sig[-1] or ref == sig[-1]:
                 return tx_id
@@ -74,6 +83,30 @@ class _DuplicateIndex:
 
     def add(self, sig: DuplicateSignature, tx_id: str) -> None:
         self._seen.setdefault(sig[:-1], []).append((sig[-1], tx_id))
+
+    def __len__(self) -> int:
+        return sum(len(v) for v in self._seen.values())
+
+
+class CaseDuplicateIndex(_DuplicateIndex):
+    """Duplicate signatures of the case's existing rows, built once and extended as statements are accepted.
+
+    Pass it to :func:`run_anomaly_gate` as ``existing_index`` instead of ``existing_case_txns``: the result is
+    identical, but the cost is O(new rows) per statement instead of O(case rows) (BE-06: 100 statements took
+    5M signature computations).
+    """
+
+    def __init__(self, transactions: Iterable[NormalizedTransaction] = ()) -> None:
+        super().__init__()
+        self.tx_ids: set = set()
+        self.extend(transactions)
+
+    def extend(self, transactions: Iterable[NormalizedTransaction]) -> None:
+        for tx in transactions:
+            if tx.tx_id in self.tx_ids:
+                continue
+            self.tx_ids.add(tx.tx_id)
+            self.add(duplicate_signature(tx, ""), tx.tx_id)
 
 
 def _account_for(tx: NormalizedTransaction, account_by_statement: Optional[Dict[str, str]]) -> str:
@@ -189,6 +222,7 @@ def run_anomaly_gate(
     transactions: List[NormalizedTransaction],
     existing_case_txns: List[NormalizedTransaction] | None = None,
     balance_tolerance: Decimal = Decimal("0.05"),
+    existing_index: Optional[CaseDuplicateIndex] = None,
 ) -> Tuple[BankAccountStatement, List[NormalizedTransaction], Dict[str, Any]]:
     """
     Validate chronological order, running balance conservation (including row 0 against the statement opening
@@ -248,9 +282,15 @@ def run_anomaly_gate(
             if closing_was_derived:
                 statement.closing_balance = transactions[-1].running_balance
 
-    # Duplicate index over the rest of the case (other files of this bulk batch and earlier uploads)
-    dup_index = _DuplicateIndex()
-    if existing_case_txns:
+    # Duplicate index over the rest of the case (other files of this bulk batch and earlier uploads).
+    # A prebuilt CaseDuplicateIndex must not already contain this statement's rows.
+    if existing_index is not None:
+        if any(t.tx_id in existing_index.tx_ids for t in transactions):
+            raise ValueError("existing_index already contains rows of this statement")
+        dup_index = _DuplicateIndex(base=existing_index)
+    else:
+        dup_index = _DuplicateIndex()
+    if existing_case_txns and existing_index is None:
         own_ids = {t.tx_id for t in transactions}
         for etx in existing_case_txns:
             if etx.tx_id in own_ids:

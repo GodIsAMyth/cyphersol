@@ -127,10 +127,13 @@ _TX_COLUMNS = (
     "tally_voucher_type", "tally_ledger_name", "anomaly_flags_json", "is_duplicate_ignored",
     "source_account_number", "source_holder_name", "card_number_masked", "cheque_number",
 )
+# change_rev: the case revision a row was last written at (revision read inside the write transaction + 1).
+# The analysis cache reloads only rows with change_rev > its cached revision (BE-07).
 _TX_UPSERT_SQL = (
-    f"INSERT INTO transactions ({', '.join(_TX_COLUMNS)}) VALUES ({', '.join('?' * len(_TX_COLUMNS))}) "
+    f"INSERT INTO transactions ({', '.join(_TX_COLUMNS)}, change_rev) "
+    f"VALUES ({', '.join('?' * (len(_TX_COLUMNS) + 1))}) "
     "ON CONFLICT(tx_id) DO UPDATE SET "
-    + ", ".join(f"{c} = excluded.{c}" for c in _TX_COLUMNS if c not in ("tx_id", "case_id"))
+    + ", ".join(f"{c} = excluded.{c}" for c in _TX_COLUMNS + ("change_rev",) if c not in ("tx_id", "case_id"))
 )
 
 _STMT_COLUMNS = (
@@ -551,6 +554,10 @@ class CypherVault:
         for col in ("card_number_masked", "cheque_number"):
             if col not in tx_cols:
                 conn.execute(f"ALTER TABLE transactions ADD COLUMN {col} TEXT")
+        # P2: per-row change revision for incremental analysis-cache refresh (BE-07).
+        if "change_rev" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN change_rev INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_case_change ON transactions(case_id, change_rev)")
 
         # user_rules: legacy table had UNIQUE(pattern, direction) and no case scope -> rebuild once.
         rule_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_rules'").fetchone()[0]
@@ -818,7 +825,11 @@ class CypherVault:
             self._bump_revision(conn, {t.case_id for t in transactions})
 
     def _upsert_transactions_conn(self, conn: sqlite3.Connection, transactions: Sequence[NormalizedTransaction]) -> None:
-        conn.executemany(_TX_UPSERT_SQL, [self._tx_params(t) for t in transactions])
+        revs: Dict[Optional[str], int] = {}
+        for cid in {t.case_id for t in transactions}:
+            r = conn.execute("SELECT revision FROM cases WHERE case_id = ?", (cid,)).fetchone()
+            revs[cid] = (int(r[0]) if r else 0) + 1
+        conn.executemany(_TX_UPSERT_SQL, [self._tx_params(t) + (revs[t.case_id],) for t in transactions])
 
     @staticmethod
     def _row_to_stmt(r: sqlite3.Row) -> BankAccountStatement:
@@ -873,8 +884,49 @@ class CypherVault:
         return out
 
     # ------------------------------------------------------------------------------------------ transactions
-    @staticmethod
-    def _row_to_tx(r: sqlite3.Row) -> NormalizedTransaction:
+    # Decoding caches (BE-07): amounts, flag lists and suggestion lists repeat heavily across rows, so each
+    # distinct stored value is converted once. Cached values are immutable (Decimal, tuples of enums, the JSON
+    # text); every transaction still receives its own list objects.
+    _DEC_CACHE: Dict[float, Decimal] = {}
+    _FLAGS_CACHE: Dict[str, Tuple[AnomalyFlag, ...]] = {}
+    _TOP3_CACHE: Dict[str, Tuple[Dict[str, Any], ...]] = {}
+    _DIRECTION_BY_VALUE = {d.value: d for d in TxDirection}
+    _VOUCHER_BY_VALUE = {v.value: v for v in VoucherType}
+    _DECODE_CACHE_MAX = 200_000
+
+    @classmethod
+    def _dec(cls, v: Any) -> Decimal:
+        d = cls._DEC_CACHE.get(v)
+        if d is None:
+            d = Decimal(f"{v:.2f}")
+            if len(cls._DEC_CACHE) >= cls._DECODE_CACHE_MAX:
+                cls._DEC_CACHE.clear()
+            cls._DEC_CACHE[v] = d
+        return d
+
+    @classmethod
+    def _flags(cls, raw: str) -> List[AnomalyFlag]:
+        f = cls._FLAGS_CACHE.get(raw)
+        if f is None:
+            f = tuple(AnomalyFlag(x) for x in json.loads(raw))
+            if len(cls._FLAGS_CACHE) >= 4096:
+                cls._FLAGS_CACHE.clear()
+            cls._FLAGS_CACHE[raw] = f
+        return list(f)
+
+    @classmethod
+    def _top3(cls, raw: str) -> List[Dict[str, Any]]:
+        t = cls._TOP3_CACHE.get(raw)
+        if t is None:
+            t = tuple(json.loads(raw))
+            if len(cls._TOP3_CACHE) >= cls._DECODE_CACHE_MAX:
+                cls._TOP3_CACHE.clear()
+            cls._TOP3_CACHE[raw] = t
+        return list(t)  # suggestion dicts are shared read-only; callers replace the list, never mutate a dict
+
+    @classmethod
+    def _row_to_tx(cls, r: sqlite3.Row) -> NormalizedTransaction:
+        vt = r["tally_voucher_type"]
         return NormalizedTransaction(
             tx_id=r["tx_id"],
             statement_id=r["statement_id"],
@@ -887,10 +939,10 @@ class CypherVault:
             cheque_or_ref_no=r["cheque_or_ref_no"],
             utr_number=r["utr_number"],
             payment_channel=r["payment_channel"],
-            direction=TxDirection(r["direction"]),
-            debit=Decimal(f"{r['debit']:.2f}"),
-            credit=Decimal(f"{r['credit']:.2f}"),
-            running_balance=Decimal(f"{r['running_balance']:.2f}"),
+            direction=cls._DIRECTION_BY_VALUE.get(r["direction"]) or TxDirection(r["direction"]),
+            debit=cls._dec(r["debit"]),
+            credit=cls._dec(r["credit"]),
+            running_balance=cls._dec(r["running_balance"]),
             extracted_counterparty=r["extracted_counterparty"],
             counterparty_vpa_or_acc=r["counterparty_vpa_or_acc"],
             counterparty_ifsc=r["counterparty_ifsc"],
@@ -899,11 +951,11 @@ class CypherVault:
             category_name=r["category_name"],
             categorization_source=r["categorization_source"],
             confidence_score=float(r["confidence_score"]),
-            top3_suggestions=json.loads(r["top3_suggestions_json"]),
+            top3_suggestions=cls._top3(r["top3_suggestions_json"]),
             is_suspense=bool(r["is_suspense"]),
-            tally_voucher_type=VoucherType(r["tally_voucher_type"]) if r["tally_voucher_type"] else None,
+            tally_voucher_type=(cls._VOUCHER_BY_VALUE.get(vt) or VoucherType(vt)) if vt else None,
             tally_ledger_name=r["tally_ledger_name"],
-            anomaly_flags=[AnomalyFlag(x) for x in json.loads(r["anomaly_flags_json"])],
+            anomaly_flags=cls._flags(r["anomaly_flags_json"]),
             is_duplicate_ignored=bool(r["is_duplicate_ignored"]),
             source_account_number=r["source_account_number"],
             source_holder_name=r["source_holder_name"],
@@ -912,12 +964,64 @@ class CypherVault:
         )
 
     def get_transactions(self, case_id: str) -> List[NormalizedTransaction]:
+        return self.get_transactions_with_order_keys(case_id)[0]
+
+    def get_transactions_with_order_keys(
+        self, case_id: str, changed_since: Optional[int] = None
+    ) -> Tuple[List[NormalizedTransaction], List[tuple], int]:
+        """Transactions in case order (txn_date, row_index, rowid) with their order keys and the total row count
+        of the case. ``changed_since`` returns only rows written after that case revision (BE-07)."""
+        sql = "SELECT rowid AS _rowid, * FROM transactions WHERE case_id = ?"
+        params: List[Any] = [case_id]
+        if changed_since is not None:
+            sql += " AND change_rev > ?"
+            params.append(int(changed_since))
+        sql += " ORDER BY txn_date ASC, row_index ASC, rowid ASC"
         with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM transactions WHERE case_id = ? ORDER BY txn_date ASC, row_index ASC",
-                (case_id,),
-            ).fetchall()
-            return [self._row_to_tx(r) for r in rows]
+            cur = conn.cursor()
+            cur.row_factory = None  # plain tuples: name lookups on sqlite3.Row dominated decoding (BE-07)
+            cur.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM transactions WHERE case_id = ?", (case_id,)).fetchone()[0]
+        i_date, i_row = cols.index("txn_date"), cols.index("row_index")
+        keys = [(r[i_date], r[i_row], r[0]) for r in rows]
+        return self._tuples_to_txs(cols, rows), keys, int(total)
+
+    @classmethod
+    def _tuples_to_txs(cls, cols: List[str], rows: List[tuple]) -> List[NormalizedTransaction]:
+        ix = {c: i for i, c in enumerate(cols)}
+        (i_id, i_stmt, i_case, i_row, i_date, i_ts, i_vd, i_narr, i_ref, i_utr, i_chan, i_dir, i_dr, i_cr, i_bal,
+         i_cp, i_vpa, i_ifsc, i_ent, i_cat, i_catn, i_src, i_conf, i_top3, i_susp, i_vt, i_led, i_flags, i_ign,
+         i_acc, i_holder, i_card, i_chq) = (ix[c] for c in (
+            "tx_id", "statement_id", "case_id", "row_index", "txn_date", "txn_timestamp", "value_date",
+            "raw_narration", "cheque_or_ref_no", "utr_number", "payment_channel", "direction", "debit", "credit",
+            "running_balance", "extracted_counterparty", "counterparty_vpa_or_acc", "counterparty_ifsc",
+            "resolved_entity_id", "category_id", "category_name", "categorization_source", "confidence_score",
+            "top3_suggestions_json", "is_suspense", "tally_voucher_type", "tally_ledger_name", "anomaly_flags_json",
+            "is_duplicate_ignored", "source_account_number", "source_holder_name", "card_number_masked",
+            "cheque_number"))
+        dirs, vts, dec, top3, flags = cls._DIRECTION_BY_VALUE, cls._VOUCHER_BY_VALUE, cls._dec, cls._top3, cls._flags
+        out: List[NormalizedTransaction] = []
+        append = out.append
+        for r in rows:
+            vt = r[i_vt]
+            append(NormalizedTransaction(
+                tx_id=r[i_id], statement_id=r[i_stmt], case_id=r[i_case], row_index=int(r[i_row]),
+                txn_date=r[i_date], txn_timestamp=r[i_ts], value_date=r[i_vd], raw_narration=r[i_narr],
+                cheque_or_ref_no=r[i_ref], utr_number=r[i_utr], payment_channel=r[i_chan],
+                direction=dirs.get(r[i_dir]) or TxDirection(r[i_dir]),
+                debit=dec(r[i_dr]), credit=dec(r[i_cr]), running_balance=dec(r[i_bal]),
+                extracted_counterparty=r[i_cp], counterparty_vpa_or_acc=r[i_vpa], counterparty_ifsc=r[i_ifsc],
+                resolved_entity_id=r[i_ent], category_id=int(r[i_cat]), category_name=r[i_catn],
+                categorization_source=r[i_src], confidence_score=float(r[i_conf]), top3_suggestions=top3(r[i_top3]),
+                is_suspense=bool(r[i_susp]),
+                tally_voucher_type=(vts.get(vt) or VoucherType(vt)) if vt else None,
+                tally_ledger_name=r[i_led], anomaly_flags=flags(r[i_flags]), is_duplicate_ignored=bool(r[i_ign]),
+                source_account_number=r[i_acc], source_holder_name=r[i_holder], card_number_masked=r[i_card],
+                cheque_number=r[i_chq],
+            ))
+        return out
 
     def get_transactions_by_ids(self, case_id: str, tx_ids: Iterable[str]) -> List[NormalizedTransaction]:
         ids = list(dict.fromkeys(tx_ids))
