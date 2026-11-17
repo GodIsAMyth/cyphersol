@@ -892,10 +892,16 @@ _BOM_ENCODINGS: Tuple[Tuple[bytes, str], ...] = (
 _NUL_MAX_SHARE = 0.01
 
 
+def _is_multibyte_encoding(name: str) -> bool:
+    n = codecs.lookup(name).name if name else ""
+    return n.startswith(("utf", "gb", "big5", "shift_jis", "euc", "iso2022", "cp932", "cp949", "cp950", "hz",
+                         "johab"))
+
+
 def decode_statement_text(raw_bytes: bytes, warnings: Optional[List[str]] = None) -> Tuple[str, str]:
     """
-    Decode a text statement: BOM sniff -> BOM-less UTF-16 sniff -> charset_normalizer (if installed) -> utf-8
-    -> cp1252 -> latin-1. Returns (text, encoding).
+    Decode a text statement: BOM sniff -> BOM-less UTF-16 sniff -> strict utf-8 -> charset_normalizer (if
+    installed; multi-byte encodings only) -> cp1252 -> latin-1. Returns (text, encoding).
 
     Leading/trailing NUL padding (written by some core-banking exporters) is stripped; a few stray NULs are
     removed with a warning appended to ``warnings``. Raises ValueError when NULs make up more than 1% of the
@@ -920,17 +926,25 @@ def decode_statement_text(raw_bytes: bytes, warnings: Optional[List[str]] = None
                 text = None
     if text is None:
         try:
+            text, encoding = raw_bytes.decode("utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            text = None
+    if text is None:
+        # The detector only decides between multi-byte encodings (GB18030, Shift-JIS, EUC-*, Big5...). On short
+        # single-byte statements every Latin codepage ties, so its guess there is arbitrary (a cp1252 export came
+        # back as mac_latin2 and lost its en dash); single-byte text uses the Windows default, cp1252.
+        try:
             from charset_normalizer import from_bytes  # type: ignore
 
             best = from_bytes(raw_bytes).best()
-            if best is not None and best.encoding:
+            if best is not None and best.encoding and _is_multibyte_encoding(best.encoding):
                 text, encoding = str(best), best.encoding
         except ImportError:
             pass
         except Exception:  # noqa: BLE001 - detector failures fall through to the deterministic chain
             text = None
     if text is None:
-        for enc in ("utf-8", "cp1252", "latin-1"):
+        for enc in ("cp1252", "latin-1"):
             try:
                 text, encoding = raw_bytes.decode(enc), enc
                 break

@@ -293,6 +293,18 @@ class TestIng06XlsAndEncodings(unittest.TestCase):
         _stmt, txns, _meta, _counts = _parse_and_gate("cp.csv", text.encode("cp1252"))
         self.assertIn("–", txns[0].raw_narration)
 
+    def test_multibyte_detection_and_utf8_first(self) -> None:
+        from cyphersol.ingestion.parser import decode_statement_text
+
+        self.assertEqual(decode_statement_text("CAFÉ – RENT".encode("utf-8"))[1], "utf-8")
+        self.assertEqual(decode_statement_text("CAFÉ – RENT".encode("cp1252")), ("CAFÉ – RENT", "cp1252"))
+        try:
+            import charset_normalizer  # noqa: F401
+        except ImportError:
+            self.skipTest("charset_normalizer not installed")
+        text = "日付,摘要,金額\n2026/04/01,給与振込,90000\n" * 5
+        self.assertTrue(decode_statement_text(text.encode("gb18030"))[0].startswith("日付,摘要"))
+
 
 class TestIng07to09BankDetection(unittest.TestCase):
     def test_unknown_bank_never_fabricates_ifsc(self) -> None:
