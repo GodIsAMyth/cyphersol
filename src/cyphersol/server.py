@@ -14,6 +14,7 @@ Request hardening (BE-01 / LLM-04 / LLM-05 / EDGE-01 / UI-L-20):
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hmac
 import html
 import ipaddress
@@ -47,7 +48,7 @@ _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 _NOT_FOUND_RE = re.compile(r"\bnot found\b", re.IGNORECASE)
 # Case POST routes that do not change case data (or schedule their own warm-up).
-_NO_WARMUP_POSTS = frozenset({"pdf-preview", "ingest-jobs", "edge/tally-push"})
+_NO_WARMUP_POSTS = frozenset({"pdf-preview", "ingest-jobs", "edge/tally-push", "inputs"})
 
 # P3 UI: explicit static MIME types (mimetypes can be wrong or missing on some hosts, and native ES modules
 # are refused unless served with a JavaScript MIME type).
@@ -258,8 +259,10 @@ def create_http_handler(
             return None
 
         def _host_ok(self, host: str) -> bool:
-            # Exact names only: "127.0.0.1", "localhost", "::1" (bracketed in the header) or an explicit allow-list.
-            return host in _LOOPBACK_NAMES or host in extra_hosts
+            # Exact names: "127.0.0.1", "localhost", "::1", wildcard "*", or explicit/pattern allow-list.
+            if host in _LOOPBACK_NAMES or "*" in extra_hosts:
+                return True
+            return any(fnmatch.fnmatch(host, pat) for pat in extra_hosts)
 
         def _reject(self, status: int, reason: str, message: str) -> None:
             logger.warning(
@@ -299,23 +302,34 @@ def create_http_handler(
                 self._reject(403, "bad_host", "Forbidden: invalid Host header")
             if not self._host_ok(host):
                 self._reject(403, "host_not_allowed", "Forbidden: Host not allowed")
-            if bound_port is not None and (port or 80) != bound_port:
-                self._reject(403, "host_port_mismatch", "Forbidden: Host port mismatch")
+
+            # Check if running behind a reverse proxy / cloud load balancer (Render, Cloud Run, AWS, Azure, Docker)
+            forwarded_proto = (self.headers.get("X-Forwarded-Proto") or "").strip().lower()
+            forwarded_port_raw = (self.headers.get("X-Forwarded-Port") or "").strip()
+            is_forwarded = bool(forwarded_proto or forwarded_port_raw or self.headers.get("X-Forwarded-For"))
+            is_cloud = is_forwarded or "*" in extra_hosts or (host not in _LOOPBACK_NAMES and self._host_ok(host))
+
+            if bound_port is not None and not is_cloud:
+                if (port or 80) != bound_port:
+                    self._reject(403, "host_port_mismatch", "Forbidden: Host port mismatch")
             expected_port = bound_port if bound_port is not None else port
 
             origin = self.headers.get("Origin")
             if origin is not None:
                 o = urlparse(origin.strip())
                 try:
-                    o_port = o.port or (80 if o.scheme == "http" else None)
+                    default_scheme_port = 443 if o.scheme == "https" else 80
+                    o_port = o.port or default_scheme_port
                 except ValueError:
                     o_port = None
                 o_host = (o.hostname or "").lower()
+                expected_scheme = "https" if forwarded_proto == "https" else "http"
                 if (
-                    o.scheme != "http"
+                    o.scheme != expected_scheme
                     or not self._host_ok(o_host)
-                    or (expected_port is not None and o_port != expected_port)
                 ):
+                    self._reject(403, "origin_not_allowed", "Forbidden: cross-origin request")
+                if not is_cloud and expected_port is not None and o_port != expected_port:
                     self._reject(403, "origin_not_allowed", "Forbidden: cross-origin request")
 
             is_api = path == "/api" or path.startswith("/api/")
@@ -326,6 +340,8 @@ def create_http_handler(
             if self.command == "GET" and path == "/api/health":
                 return
             supplied = self.headers.get(TOKEN_HEADER, "")
+            if not supplied and path.endswith("/download"):
+                supplied = parse_qs(urlparse(self.path).query).get("token", [""])[0]
             if not supplied or not hmac.compare_digest(supplied.encode("utf-8"), token.encode("utf-8")):
                 self._reject(403, "bad_token", "Forbidden: missing or invalid API token")
 
@@ -558,6 +574,7 @@ def create_http_handler(
                     if sub == "jobs":
                         return self._send_json(200, service.list_jobs(cid))
                     if sub == "uploads":
+                        return self._send_json(200, service.list_staged_uploads(cid))
                         return self._send_json(200, service.list_staged_uploads(cid))
                     if sub == "overview":
                         return self._send_json(
@@ -795,6 +812,24 @@ def create_http_handler(
                             pdf_bytes,
                             {"Content-Disposition": f'attachment; filename="{cid}_forensic_dossier.pdf"'},
                         )
+                    if sub == "inputs":
+                        return self._send_json(200, {"inputs": service.list_case_inputs(cid)})
+                    if sub.startswith("inputs/") and sub.endswith("/download"):
+                        ident = sub[len("inputs/") : -len("/download")]
+                        res = service.get_case_input_file(cid, ident)
+                        if not res:
+                            return self._send_json(404, {"error": "Input file not found"})
+                        fname, ctype, b = res
+                        return send_download(b, ctype, fname)
+                    if sub == "outputs":
+                        return self._send_json(200, {"outputs": service.list_case_outputs(cid)})
+                    if sub.startswith("outputs/") and sub.endswith("/download"):
+                        ident = sub[len("outputs/") : -len("/download")]
+                        res = service.get_case_output_file(cid, ident)
+                        if not res:
+                            return self._send_json(404, {"error": "Output file not found"})
+                        fname, ctype, b = res
+                        return send_download(b, ctype, fname)
 
                 if path.startswith("/api/"):
                     return self._send_json(404, {"error": "Unknown endpoint"})
@@ -930,6 +965,15 @@ def create_http_handler(
                             file_password_hints=file_hints if any(file_hints) else None,
                         )
                         return self._send_json(200, res)
+
+                    if sub == "inputs":
+                        raw_fn = str(_json_body_field(body, "filename"))
+                        content = _b64_field(body, "content_b64")
+                        meta = body.get("metadata")
+                        if meta is not None and not isinstance(meta, dict):
+                            raise BadRequest("'metadata' must be an object")
+                        record = service.upload_case_document(cid, raw_fn, content, metadata=meta)
+                        return self._send_json(201, record)
 
                     if sub == "uploads":
                         # Per-file staging (P2 item 27): one file per request, consumed by an ingest job.

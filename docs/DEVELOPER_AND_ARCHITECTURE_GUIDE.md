@@ -62,7 +62,7 @@ flowchart TD
 | `src/cyphersol/__init__.py` | Public package API exports (`__version__`, `CypherApplicationService`, `CypherVault`, `run_server`) | No |
 | `src/cyphersol/models.py` | Domain dataclasses, Enums, and recursive JSON serializer (`serialize_value`) | No |
 | `src/cyphersol/taxonomy.py` | `52` category specs, `113` Indian bank profiles, deterministic `12,777`-point KB builder | No |
-| `src/cyphersol/storage.py` | SQLite WAL schema (`10` tables including `llm_settings`, `8` indexes), `RLock` thread safety, CRUD operations | **Yes (SQLite)** |
+| `src/cyphersol/storage.py` | SQLite WAL schema (`12` tables including `case_inputs`, `case_outputs`, `llm_settings`, `10` indexes), `RLock` thread safety, CRUD operations | **Yes (SQLite)** |
 | `src/cyphersol/llm_agents.py` | Multi-provider client (Gemini, Claude, OpenAI), multimodal Vision extractor, Stages 1–4 Backup Agents, `StageAgentOrchestrator`, and telemetry | **Yes (Outbound HTTPS via stdlib urllib)** |
 | `src/cyphersol/demo_data.py` | First-boot sample file generator (`11` files) and demo case seeder | **Yes (samples dir)** |
 | `src/cyphersol/service.py` | Transactional orchestration across storage, ingestion, NLP, Stage 1–4 agents, Edge, Trace, and exports | Coordinates `CypherVault` |
@@ -219,6 +219,29 @@ Designed to provide robust backup across Stages 1–4 without requiring external
   3. **Stage 3 (`Stage3NarrationAgent`):** Triggered on unresolved narrations (`OTHER`, `TRANSFER`, or missing UTR). Extracts structured Indian payment rails (`UPI`, `NEFT`, `RTGS`, `IMPS`), UTR/RRN, IFSC, VPA, and clean uppercase counterparty entities.
   4. **Stage 4 (`Stage4CategorizationEntityAgent`):** Classifies Suspense rows (`Category 52`) or low-confidence entries (`< 0.72`) across Categories `1..51` while preserving `USER_RULE` auto-learn overrides. Simultaneously scans pairs of entity names in similarity range `[0.55, similarity_threshold)` and identifies real-world transliteration merges (`Agent 4B`).
 - **Telemetry & Traceability (`StageAgentTelemetry`):** Every ingestion/re-run emits structured telemetry (`execution_mode`, `provider`, `model`, `vision_model`, `stages_invoked`, `stage_details`, `warnings`) persisted in SQLite (`case_telemetry:{case_id}`) and surfaced directly in the UI 4-Agent Status Strip.
+
+### 3.7 Persistent Storage Architecture & Chain of Custody Repository
+
+CypherSOL implements a disk-persisted document and export storage layer backed by SQLite metadata:
+
+- **Storage Layout:**
+  - Database: `{CYPHERSOL_DATA_DIR}/cyphersol_vault.db` (SQLite with WAL mode).
+  - Raw Ingested & Uploaded Files: `{CYPHERSOL_DATA_DIR}/cases/{case_id}/inputs/{sha256[:12]}_{clean_name}`.
+  - Export Archives: `{CYPHERSOL_DATA_DIR}/cases/{case_id}/outputs/{timestamp}_{export_type}_{clean_name}`.
+  - Rotating Logs: `{CYPHERSOL_DATA_DIR}/logs/cyphersol.log` (`RotatingFileHandler`, 10MB x 5 backups).
+- **Database Tables (`src/cyphersol/storage.py`):**
+  - `case_inputs`: `(input_id, case_id, statement_id, filename, file_type, size_bytes, sha256_hash, storage_path, uploaded_at, metadata_json)` with index on `(case_id, uploaded_at DESC)`.
+  - `case_outputs`: `(output_id, case_id, export_type, filename, size_bytes, sha256_hash, storage_path, created_at, metadata_json)` with index on `(case_id, created_at DESC)`.
+- **REST Endpoints (`src/cyphersol/server.py`):**
+  - `GET /api/cases/{id}/inputs`: Lists all input documents with sizes, SHA-256 hashes, and download URLs.
+  - `GET /api/cases/{id}/inputs/{ident}/download`: Streams the original raw file with `Content-Disposition: attachment; filename="..."`.
+  - `POST /api/cases/{id}/inputs`: Uploads supplementary case evidence (`{filename, content_b64, file_type, metadata}`).
+  - `GET /api/cases/{id}/outputs`: Lists all generated reports and export snapshots.
+  - `GET /api/cases/{id}/outputs/{ident}/download`: Downloads the archived report.
+- **Reverse Proxy & Host Hardening:**
+  - Evaluates `X-Forwarded-Proto: https` when running behind reverse proxies (Cloud Run, Render, ALB, Ingress).
+  - Matches `CYPHERSOL_ALLOWED_HOSTS` using glob/wildcard patterns (e.g. `*.onrender.com`, `*.run.app`, `*`).
+  - Strict token authentication: Query-string tokens (`?token=...`) are accepted exclusively on endpoints ending in `/download` to support browser download links, while standard API endpoints strictly enforce `X-CypherSOL-Token` header.
 
 ---
 

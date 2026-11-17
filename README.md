@@ -71,6 +71,40 @@ Run **one** command from the project folder — no `.venv` path or extra flags r
 
 ---
 
+## Production Deployment & Cloud Hosting
+
+CypherSOL provides a unified container deployment strategy supporting **Docker**, **Render**, **Google Cloud Run**, **AWS**, and **Azure** with persistent volume mounts:
+
+```bash
+# 1. Local or VM via Docker Compose
+docker compose up -d
+
+# 2. Google Cloud Run (with Cloud Storage volume mount)
+./deploy/google-cloud-run/deploy.sh
+
+# 3. Azure Container Apps (with Azure Files share)
+./deploy/azure/deploy-container-app.sh
+
+# 4. Render (One-Click Blueprint)
+# Connect your GitHub repository — Render reads `render.yaml` with 10GB persistent SSD.
+
+# 5. AWS ECS Fargate / App Runner
+# Deploy via `deploy/aws/ecs-task-definition.json` with Amazon EFS persistent storage.
+```
+
+*See [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) for step-by-step setup, IAM permissions, and reverse proxy settings.*
+
+---
+
+## Persistent Storage & Case Repository
+
+All inputs, exports, and application logs are safely persisted under `CYPHERSOL_DATA_DIR` (default: `data/`):
+- **Raw Ingested Documents:** Original `.pdf`, `.xlsx`, `.csv`, `.txt`, and `.json` files are archived per case under `cases/{case_id}/inputs/` with SHA-256 chain of custody and 1-click UI re-download.
+- **Export History:** Every generated `.xlsx` workbook, Tally `.xml`, and Forensic Dossier (`.pdf`/`.html`) is archived under `cases/{case_id}/outputs/` and retrievable from the **Files & exports** tab.
+- **Rotating Logs:** Kept in `data/logs/cyphersol.log` (`RotatingFileHandler`, 10MB x 5 backups) with zero UI exposure for forensic privacy.
+
+---
+
 ## Running Tests & Optional Accelerators
 
 ```bash

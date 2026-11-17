@@ -1,0 +1,63 @@
+{
+  "family": "cyphersol-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/cyphersolTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "cyphersol",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/cyphersol:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "HOST", "value": "0.0.0.0" },
+        { "name": "PORT", "value": "8080" },
+        { "name": "CYPHERSOL_DATA_DIR", "value": "/data" },
+        { "name": "CYPHERSOL_ALLOWED_HOSTS", "value": "*" },
+        { "name": "CYPHERSOL_NO_BROWSER", "value": "1" },
+        { "name": "CYPHERSOL_LOG_LEVEL", "value": "INFO" }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "cyphersol-efs-volume",
+          "containerPath": "/data",
+          "readOnly": false
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/api/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/cyphersol",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "cyphersol-efs-volume",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-EFS_ID",
+        "rootDirectory": "/",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}

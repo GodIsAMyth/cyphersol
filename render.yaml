@@ -1,0 +1,29 @@
+# ==============================================================================
+# Render Blueprint Specification for CypherSOL
+# Docs: https://render.com/docs/blueprint-spec
+# ==============================================================================
+services:
+  - type: web
+    name: cyphersol
+    runtime: docker
+    plan: starter
+    region: oregon # or frankfurt, ohio, singapore
+    healthCheckPath: /api/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: CYPHERSOL_DATA_DIR
+        value: /data
+      - key: CYPHERSOL_ALLOWED_HOSTS
+        value: "*"
+      - key: CYPHERSOL_NO_BROWSER
+        value: "1"
+      - key: CYPHERSOL_LOG_LEVEL
+        value: INFO
+    # Persistent Disk retains SQLite database, raw statement documents, generated reports, and logs
+    disk:
+      name: cyphersol-data
+      mountPath: /data
+      sizeGB: 10

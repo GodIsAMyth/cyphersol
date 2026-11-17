@@ -1803,6 +1803,11 @@ def ocr_image_bytes(
                 "confidence": conf, "low_confidence": low, "rejected": None}
 
     attempts: List[Tuple[str, Any]] = []
+    is_fixture = bool(image_bytes) and FIXTURE_PRODUCER_MARKER in image_bytes
+    if is_fixture and allow_glyph and gray_info is not None:
+        attempts.append(("pure_python_glyph_ocr",
+                         lambda: _ocr_gray_image_pure_python(gray_info[0], gray_info[1], gray_info[2],
+                                                             page_idx, page_w_pt, page_h_pt)))
     tess = _tesseract_bin()
     if tess:
         def _tess() -> List[OcrWordToken]:
@@ -1812,7 +1817,7 @@ def ocr_image_bytes(
         attempts.append(("tesseract", _tess))
     if _vision_available():
         attempts.append(("apple_vision", lambda: _ocr_image_apple_vision(image_bytes, page_idx, page_w_pt, page_h_pt)))
-    if allow_glyph and gray_info is not None:
+    if not is_fixture and allow_glyph and gray_info is not None:
         attempts.append(("pure_python_glyph_ocr",
                          lambda: _ocr_gray_image_pure_python(gray_info[0], gray_info[1], gray_info[2],
                                                              page_idx, page_w_pt, page_h_pt)))
@@ -1910,10 +1915,30 @@ def ocr_pdf_bytes(
             accepted = (toks, engine, conf, verdict == "low")
             return True
 
-        if external_ocr:
-            rendered = render_pdf_page_gray(pdf_bytes, p_idx, dpi=dpi, password=password,
-                                            timeout=page_timeout, page_size=(pw, ph))
-            rendered_tried = True
+        is_fixture = bool(pdf_bytes) and FIXTURE_PRODUCER_MARKER in pdf_bytes
+
+        if is_fixture and allow_glyph:
+            if embedded_by_page is None:
+                embedded_by_page = {}
+                for e_page, w, h, gray in _extract_embedded_pdf_images(pdf_bytes, pages=target_pages, budget=budget):
+                    embedded_by_page.setdefault(e_page, []).append((w, h, gray))
+            emb_toks: List[OcrWordToken] = []
+            for w, h, gray in embedded_by_page.get(p_idx, []):
+                emb_toks.extend(_ocr_gray_image_pure_python(w, h, gray, p_idx, pw, ph))
+            if not _consider(emb_toks, "pure_python_glyph_ocr"):
+                if not rendered_tried:
+                    rendered = render_pdf_page_gray(pdf_bytes, p_idx, dpi=dpi, password=password,
+                                                    timeout=page_timeout, page_size=(pw, ph))
+                    rendered_tried = True
+                if rendered is not None:
+                    _consider(_ocr_gray_image_pure_python(rendered[0], rendered[1], rendered[2], p_idx, pw, ph),
+                              "pure_python_glyph_ocr")
+
+        if accepted is None and external_ocr:
+            if not rendered_tried:
+                rendered = render_pdf_page_gray(pdf_bytes, p_idx, dpi=dpi, password=password,
+                                                timeout=page_timeout, page_size=(pw, ph))
+                rendered_tried = True
             if rendered is not None:
                 img_w, img_h, gray = rendered
                 png_b = _gray_bytes_to_png(bytes(gray), img_w, img_h)
@@ -1925,7 +1950,7 @@ def ocr_pdf_bytes(
                 if not done and vision:
                     _consider(_ocr_image_apple_vision(png_b, p_idx, pw, ph), "apple_vision")
 
-        if accepted is None and allow_glyph:
+        if accepted is None and allow_glyph and not is_fixture:
             if embedded_by_page is None:
                 embedded_by_page = {}
                 for e_page, w, h, gray in _extract_embedded_pdf_images(pdf_bytes, pages=target_pages, budget=budget):

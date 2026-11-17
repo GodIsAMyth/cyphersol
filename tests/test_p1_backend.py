@@ -34,7 +34,7 @@ from cyphersol.server import CONTENT_SECURITY_POLICY, create_http_handler  # noq
 from cyphersol.service import CypherApplicationService, tx_to_json  # noqa: E402
 from cyphersol.storage import CypherVault  # noqa: E402
 
-SCRATCH = "/private/tmp/claude-501/cyphersol-p1"
+SCRATCH = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")
 UI_DIR = os.path.join(SRC_DIR, "cyphersol", "ui")
 SAMPLES = os.path.join(ROOT_DIR, "sample_statements")
 OLD_DB = os.path.join(SCRATCH, "old_pre_p1.db")

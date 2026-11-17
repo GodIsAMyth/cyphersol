@@ -1,0 +1,22 @@
+version: 1.0
+runtime: custom
+build:
+  commands:
+    build:
+      - echo "Built via Dockerfile"
+run:
+  runtime-version: custom
+  command: python3 -m cyphersol.cli --host 0.0.0.0 --port 8080 --no-browser
+  network:
+    port: 8080
+  env:
+    - name: HOST
+      value: 0.0.0.0
+    - name: PORT
+      value: 8080
+    - name: CYPHERSOL_DATA_DIR
+      value: /data
+    - name: CYPHERSOL_ALLOWED_HOSTS
+      value: "*"
+    - name: CYPHERSOL_NO_BROWSER
+      value: "1"

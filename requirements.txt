@@ -1,17 +1,31 @@
-# Core runtime uses 100% Python 3.11+ standard library (offline-first, zero external network dependencies).
-# Optional third-party accelerators (automatically detected and used when installed):
-# PyMuPDF>=1.24.0
-# pdfplumber>=0.11.0
-# pikepdf>=8      (in-process PDF decryption; keeps passwords out of subprocess argv, PDF-12/PDF-14)
-# openpyxl>=3.1.2
-# xlrd>=2.0.1   (legacy .xls; a stdlib BIFF8 reader is used when absent)
-# polars>=1.0.0
-# rapidfuzz>=3.0   (entity-resolution accelerator; stdlib Jaro-Winkler fallback)
-# jellyfish>=1.0   (phonetic keys accelerator; stdlib fallback)
-# networkx>=3.3
-# lightgbm>=4.3.0
-# scikit-learn>=1.5.0
-# duckdb>=1.0.0
-# fastapi>=0.111.0
-# uvicorn>=0.30.0
-# pydantic>=2.7.0
+# CypherSOL Production Dependencies & Accelerators
+# The core runtime can run on 100% Python standard library, but for cloud and container
+# deployments, all high-performance accelerators, PDF tools, and analytics libraries are installed:
+
+# PDF parsing, text extraction, and in-process decryption
+PyMuPDF>=1.24.0
+pdfplumber>=0.11.0
+pikepdf>=9.0.0
+Pillow>=10.0.0
+
+# Excel & tabular spreadsheet support
+openpyxl>=3.1.2
+xlrd>=2.0.1
+
+# High-performance analytics & data processing
+polars>=1.0.0
+duckdb>=1.0.0
+
+# Entity resolution & fuzzy matching accelerators
+rapidfuzz>=3.9.0
+jellyfish>=1.0.0
+networkx>=3.3
+
+# Machine learning categorization
+lightgbm>=4.3.0
+scikit-learn>=1.5.0
+
+# Optional API accelerators & schema validation
+pydantic>=2.7.0
+fastapi>=0.111.0
+uvicorn>=0.30.0

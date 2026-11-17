@@ -284,6 +284,30 @@ class CypherApplicationService:
         self.uploads = UploadStore()
         self.warm_analysis = bool(warm_analysis)
 
+        # Persistent rotating file logging in data volume (logs/cyphersol.log)
+        logs_dir = os.path.join(self.vault.data_dir, "logs")
+        try:
+            os.makedirs(logs_dir, exist_ok=True)
+            log_file = os.path.join(logs_dir, "cyphersol.log")
+            if not os.path.exists(log_file):
+                with open(log_file, "a", encoding="utf-8"):
+                    pass
+            cypher_logger = logging.getLogger("cyphersol")
+            if cypher_logger.level == logging.NOTSET:
+                cypher_logger.setLevel(logging.INFO)
+            from logging.handlers import RotatingFileHandler
+            abs_log_file = os.path.abspath(log_file)
+            has_this_rfh = any(
+                isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", None) == abs_log_file
+                for h in cypher_logger.handlers
+            )
+            if not has_this_rfh:
+                rfh = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+                rfh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+                cypher_logger.addHandler(rfh)
+        except Exception as _e:
+            _LOG.debug("Could not initialize file log handler: %s", _e)
+
     # ------------------------------------------------------------------------------------------ helpers
     def _case_lock(self, case_id: str) -> threading.RLock:
         """Per-case lock serialising read-modify-write sequences within this process (BE-10)."""
@@ -1475,6 +1499,18 @@ class CypherApplicationService:
         )
         try:
             self.vault.commit_ingest_batch(batch)
+            # Persist raw uploaded input files to permanent case storage
+            for fn, raw, _pwd in files:
+                sha = hashlib.sha256(raw).hexdigest()
+                stmt_id = None
+                for fr in batch.file_results:
+                    if fr.sha256 == sha:
+                        stmt_id = fr.statement_id
+                        break
+                try:
+                    self.vault.save_case_input(case_id, fn, raw, statement_id=stmt_id)
+                except Exception as _e:
+                    _LOG.warning("Could not persist input file %s: %s", fn, _e)
             lap("commit")
             report("commit", 1, 1)
         except ConflictError:
@@ -2134,6 +2170,13 @@ class CypherApplicationService:
             "xml_sha256": hashlib.sha256(res["xml"].encode("utf-8")).hexdigest(),
             "stats": self._scalar_stats(res["stats"]),
         })
+        try:
+            self.vault.save_case_output(
+                case_id, "tally_xml", f"{case_id}_tally_import.xml", res["xml"].encode("utf-8"),
+                metadata={"include_suspense": include_suspense, "company_name": company_name},
+            )
+        except Exception as _e:
+            _LOG.warning("Could not persist export output for case %s: %s", case_id, _e)
         return res
 
     def push_tally(
@@ -2183,6 +2226,13 @@ class CypherApplicationService:
             "include_suspense": include_suspense, "company_name": company_name, "use_trade_vouchers": utv,
             "sha256": hashlib.sha256(body).hexdigest(),
         })
+        try:
+            self.vault.save_case_output(
+                case_id, "tally_import", f"{case_id}_tally_import.xlsx", body,
+                metadata={"include_suspense": include_suspense, "company_name": company_name},
+            )
+        except Exception as _e:
+            _LOG.warning("Could not persist export output for case %s: %s", case_id, _e)
         return body
 
     def export_itr_xlsx(self, case_id: str, fy: Optional[str] = None) -> bytes:
@@ -2191,6 +2241,13 @@ class CypherApplicationService:
         snap = self._snapshot(case_id)
         body = export_itr_workbook_xlsx(list(snap.transactions), snap.statements, fy=fy or None)
         self._audit(case_id, "EXPORT_ITR_XLSX", {"fy": fy, "sha256": hashlib.sha256(body).hexdigest()})
+        try:
+            self.vault.save_case_output(
+                case_id, "itr_compliance", f"{case_id}_itr_{fy or 'latest'}.xlsx", body,
+                metadata={"fy": fy},
+            )
+        except Exception as _e:
+            _LOG.warning("Could not persist export output for case %s: %s", case_id, _e)
         return body
 
     def get_itr_report(self, case_id: str, fy: Optional[str] = None) -> Dict[str, Any]:
@@ -2595,10 +2652,15 @@ class CypherApplicationService:
             snap, ("bi_pairs",), lambda: list_all_bidirectional_pairs(snap.statements, list(snap.transactions), snap.entities)
         )
         self._audit(case_id, "EXPORT_XLSX", {"statements": len(snap.statements), "loops_truncated": bool(getattr(loops, "truncated", False))})
-        return export_audit_workbook_xlsx(
+        body = export_audit_workbook_xlsx(
             case_obj, snap.statements, list(snap.transactions), snap.entities, self._mules(snap), loops=list(loops),
             bidirectional_pairs=pairs,
         )
+        try:
+            self.vault.save_case_output(case_id, "audit_workbook", f"{case_id}_audit_report.xlsx", body)
+        except Exception as _e:
+            _LOG.warning("Could not persist export output for case %s: %s", case_id, _e)
+        return body
 
     def export_profile(self, case_id: str, entity_id: Optional[str], fmt: str) -> Tuple[bytes, str, str]:
         """Entity financial profile as html / xlsx / pdf (TG-17). Returns (body, content_type, filename).
@@ -2620,6 +2682,13 @@ class CypherApplicationService:
             "entity_id": prof.get("entity_id") if isinstance(prof, dict) else entity_id,
             "sha256": hashlib.sha256(body).hexdigest(),
         })
+        try:
+            self.vault.save_case_output(
+                case_id, "entity_profile", filename, body,
+                metadata={"entity_id": prof.get("entity_id") if isinstance(prof, dict) else entity_id, "format": fmt_key},
+            )
+        except Exception as _e:
+            _LOG.warning("Could not persist export output for case %s: %s", case_id, _e)
         return body, ctype, filename
 
     def export_dossier_html(self, case_id: str) -> str:
@@ -2632,10 +2701,15 @@ class CypherApplicationService:
             channel_filter=None, keyword=None, **self._graph_filters(0.0, None, None),
         )
         self._audit(case_id, "EXPORT_DOSSIER_HTML", {"statements": len(snap.statements), "llm_assisted": llm_assisted})
-        return export_forensic_dossier_html(
+        doc = export_forensic_dossier_html(
             case_obj, snap.statements, list(snap.transactions), snap.entities, self._mules(snap),
             llm_assisted=llm_assisted, llm_provider=llm_provider, loops=list(loops), graph=graph,
         )
+        try:
+            self.vault.save_case_output(case_id, "forensic_dossier_html", f"{case_id}_forensic_dossier.html", doc.encode("utf-8"))
+        except Exception as _e:
+            _LOG.warning("Could not persist export output for case %s: %s", case_id, _e)
+        return doc
 
     def export_dossier_pdf(self, case_id: str) -> bytes:
         case_obj = self._require_case(case_id)
@@ -2643,7 +2717,35 @@ class CypherApplicationService:
         llm_assisted, llm_provider = self._llm_provenance(case_id)
         loops = self._loops(snap)
         self._audit(case_id, "EXPORT_DOSSIER_PDF", {"statements": len(snap.statements), "llm_assisted": llm_assisted})
-        return export_forensic_dossier_pdf(
+        body = export_forensic_dossier_pdf(
             case_obj, snap.statements, list(snap.transactions), snap.entities, self._mules(snap),
             llm_assisted=llm_assisted, llm_provider=llm_provider, loops=list(loops),
         )
+        try:
+            self.vault.save_case_output(case_id, "forensic_dossier_pdf", f"{case_id}_forensic_dossier.pdf", body)
+        except Exception as _e:
+            _LOG.warning("Could not persist export output for case %s: %s", case_id, _e)
+        return body
+
+    # ------------------------------------------------------------------------------------------ inputs and outputs
+    def list_case_inputs(self, case_id: str) -> List[Dict[str, Any]]:
+        self._require_case(case_id)
+        return self.vault.get_case_inputs(case_id)
+
+    def get_case_input_file(self, case_id: str, identifier: str) -> Optional[Tuple[str, str, bytes]]:
+        self._require_case(case_id)
+        return self.vault.get_case_input_file(case_id, identifier)
+
+    def list_case_outputs(self, case_id: str) -> List[Dict[str, Any]]:
+        self._require_case(case_id)
+        return self.vault.get_case_outputs(case_id)
+
+    def get_case_output_file(self, case_id: str, identifier: str) -> Optional[Tuple[str, str, bytes]]:
+        self._require_case(case_id)
+        return self.vault.get_case_output_file(case_id, identifier)
+
+    def upload_case_document(
+        self, case_id: str, filename: str, content: bytes, metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        self._require_case(case_id)
+        return self.vault.save_case_input(case_id, filename, content, metadata=metadata)

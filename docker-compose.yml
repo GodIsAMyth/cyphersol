@@ -1,0 +1,32 @@
+services:
+  cyphersol:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cyphersol:latest
+    container_name: cyphersol
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - CYPHERSOL_DATA_DIR=/data
+      - CYPHERSOL_ALLOWED_HOSTS=*
+      - CYPHERSOL_NO_BROWSER=1
+      - CYPHERSOL_LOG_LEVEL=INFO
+      # Optional: set an encryption key for the local SQLite vault (requires sqlcipher3)
+      # - CYPHERSOL_DB_KEY=your-secure-passphrase
+      # Optional: set external AI API keys if using hybrid cloud LLM fallback
+      # - GEMINI_API_KEY=
+      # - ANTHROPIC_API_KEY=
+      # - OPENAI_API_KEY=
+    volumes:
+      # Persistent storage on host for vault SQLite DB, case inputs, outputs, and rotating logs
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

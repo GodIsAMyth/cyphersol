@@ -39,7 +39,7 @@ from cyphersol.service import CypherApplicationService, validate_draw_column_nam
 from cyphersol.trace import loop_detector  # noqa: E402
 from cyphersol.trace.layering import build_layering_tree, expand_layering_node  # noqa: E402
 
-SCRATCH = "/private/tmp/claude-501/cyphersol-p1"
+SCRATCH = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")
 UI_DIR = os.path.join(SRC_DIR, "cyphersol", "ui")
 TRACE_CASE = "CASE_TRACE_EOW_041"
 ENV_KEYS = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CYPHERSOL_ALLOW_CLOUD_LLM",

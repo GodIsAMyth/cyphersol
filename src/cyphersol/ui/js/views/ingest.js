@@ -236,8 +236,9 @@ export async function mount(el, ctx) {
       { id: "upload", label: "Upload", icon: "upload" },
       { id: "statements", label: "Statements & custody", icon: "hash", badge: int((data.statements || []).length) },
       { id: "draw", label: "PDF draw tool", icon: "table" },
+      { id: "artifacts", label: "Files & exports", icon: "folder" },
     ],
-    selected: ["upload", "statements", "draw"].includes(ctx.params.tab) ? ctx.params.tab : "upload",
+    selected: ["upload", "statements", "draw", "artifacts"].includes(ctx.params.tab) ? ctx.params.tab : "upload",
     fireInitial: false,
     onChange: (id, panel) => {
       ensurePanel(id, panel);
@@ -252,6 +253,7 @@ export async function mount(el, ctx) {
     if (id === "upload") buildUpload(panel);
     else if (id === "statements") buildStatements(panel);
     else if (id === "draw") buildDraw(panel);
+    else if (id === "artifacts") buildArtifacts(panel);
   }
 
   // ===================================================================================== UPLOAD
@@ -1109,9 +1111,29 @@ export async function mount(el, ctx) {
             ? html`<span class="badge badge--danger">${icon("x-circle", { size: "sm" })}${int(s.balance_mismatch_count)} mismatch</span>`
             : html`<span class="badge badge--success">${icon("check-circle", { size: "sm" })}Balanced</span>`}
             <span class="dg__sub">${s.duplicate_suspect_count ? html`<span class="badge badge--warn">${int(s.duplicate_suspect_count)} dup</span> ` : ""}${s.is_ocr_derived ? html`<span class="badge badge--info">OCR</span>` : ""}</span>` },
-        { key: "sha256_hash", label: "SHA-256 (custody)", width: "minmax(300px, 2fr)", wrap: true,
+        { key: "sha256_hash", label: "SHA-256 (custody)", width: "minmax(260px, 2fr)", wrap: true,
           title: (s) => s.sha256_hash, render: (s) => html`<span class="hash">${s.sha256_hash}</span>` },
+        { key: "actions", label: "Evidence", width: "95px", align: "center",
+          render: (s) => html`<button type="button" class="btn btn--secondary btn--xs" data-download-stmt="${s.sha256_hash}" title="Download original document">${icon("download", { size: "sm" })}File</button>` },
       ],
+    });
+    panel.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-download-stmt]");
+      if (btn) {
+        e.stopPropagation();
+        const sha = btn.getAttribute("data-download-stmt");
+        const s = store.statements().find((x) => x.sha256_hash === sha);
+        const fn = s ? s.source_filename : `statement_${sha.slice(0, 8)}.pdf`;
+        const dismiss = toast(`Downloading ${fn}…`, { timeout: 0 });
+        try {
+          await ctx.api.download(`inputs/${sha}/download`, fn);
+          dismiss();
+          toast.success(`${fn} downloaded.`);
+        } catch (err) {
+          dismiss();
+          toast.error(err, { title: "Download failed" });
+        }
+      }
     });
     ctx.onCleanup(() => stmtGrid.destroy());
     drawStmtSummary();
@@ -1176,12 +1198,27 @@ export async function mount(el, ctx) {
         </dl>
         <div class="stack-sm">
           <div class="row-between"><span class="caps">SHA-256</span>
-            <button type="button" class="btn btn--ghost btn--sm" data-action="copy-hash">${icon("link", { size: "sm" })}Copy</button></div>
+            <div class="row-sm">
+              <button type="button" class="btn btn--secondary btn--sm" data-action="download-original">${icon("download", { size: "sm" })}Download file</button>
+              <button type="button" class="btn btn--ghost btn--sm" data-action="copy-hash">${icon("link", { size: "sm" })}Copy hash</button>
+            </div>
+          </div>
           <span class="hash">${s.sha256_hash}</span>
         </div>
         <div data-slot="prov">${spinner("Loading provenance")}</div>
       </div>`,
       footer: s.balance_mismatch_count ? html`<a class="btn btn--sm" href="${ctx.href("anomalies")}">Review anomalies${icon("arrow-right", { size: "sm" })}</a>` : null,
+    });
+    d.body.querySelector('[data-action="download-original"]')?.addEventListener("click", async () => {
+      const dismiss = toast(`Downloading ${s.source_filename}…`, { timeout: 0 });
+      try {
+        await ctx.api.download(`inputs/${s.sha256_hash}/download`, s.source_filename);
+        dismiss();
+        toast.success(`${s.source_filename} downloaded.`);
+      } catch (err) {
+        dismiss();
+        toast.error(err, { title: "Download failed" });
+      }
     });
     d.body.querySelector('[data-action="copy-hash"]').addEventListener("click", async () => {
       try {
@@ -1965,6 +2002,150 @@ export async function mount(el, ctx) {
     });
   }
 
+  // ===================================================================================== ARTIFACTS & EXPORTS
+  function buildArtifacts(panel) {
+    render(
+      panel,
+      html`<div class="stack-lg">
+        <section class="card" aria-labelledby="art-inputs-title">
+          <div class="card__head">
+            <div>
+              <h2 class="card__title" id="art-inputs-title">Original Input Documents</h2>
+              <p class="card__sub">All raw uploaded files (PDFs, Excel spreadsheets, CSVs, JSONs, TXTs) stored for this case.</p>
+            </div>
+            <div class="row-sm">
+              <input type="file" id="input-doc-picker" class="visually-hidden" multiple />
+              <button type="button" class="btn btn--secondary btn--sm" id="btn-upload-doc">${icon("upload", { size: "sm" })}Upload extra document</button>
+            </div>
+          </div>
+          <div class="card__body" data-slot="inputs-grid"></div>
+        </section>
+
+        <section class="card" aria-labelledby="art-outputs-title">
+          <div class="card__head">
+            <div>
+              <h2 class="card__title" id="art-outputs-title">Generated Exports &amp; Reports</h2>
+              <p class="card__sub">Audit workbooks, forensic dossiers, Tally XMLs, and compliance reports saved for this case.</p>
+            </div>
+          </div>
+          <div class="card__body" data-slot="outputs-grid"></div>
+        </section>
+      </div>`
+    );
+
+    const inputsSlot = panel.querySelector('[data-slot="inputs-grid"]');
+    const outputsSlot = panel.querySelector('[data-slot="outputs-grid"]');
+    const picker = panel.querySelector("#input-doc-picker");
+    const uploadBtn = panel.querySelector("#btn-upload-doc");
+
+    uploadBtn?.addEventListener("click", () => picker?.click());
+    picker?.addEventListener("change", async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      for (const f of files) {
+        const dismiss = toast(`Uploading ${f.name}…`, { timeout: 0 });
+        try {
+          const b64 = await fileToBase64(f);
+          await ctx.api.post("inputs", { filename: f.name, content_b64: b64 });
+          dismiss();
+          toast.success(`${f.name} stored in case evidence.`);
+        } catch (err) {
+          dismiss();
+          toast.error(err, { title: "Upload failed" });
+        }
+      }
+      picker.value = "";
+      loadInputs();
+    });
+
+    async function loadInputs() {
+      render(inputsSlot, html`<div class="pad muted small">${icon("refresh", { className: "spin", size: "sm" })} Loading inputs…</div>`);
+      try {
+        const res = await ctx.api.get("inputs");
+        const items = res.inputs || [];
+        if (!items.length) {
+          render(inputsSlot, html`<div class="pad muted small">No stored documents yet. Files uploaded during ingestion will appear here automatically.</div>`);
+          return;
+        }
+        createDataGrid(inputsSlot, {
+          ariaLabel: "Case input files",
+          rowKey: "input_id",
+          rows: items,
+          height: "auto",
+          rowHeight: 52,
+          columns: [
+            { key: "filename", label: "Document name", width: "minmax(220px, 2fr)", sortable: true,
+              render: (r) => html`<span class="strong truncate" title="${r.filename}">${r.filename}</span><span class="dg__sub mono xsmall">${r.content_type || ""}</span>` },
+            { key: "file_size_bytes", label: "Size", width: "100px", align: "right", sortable: true, format: (v) => bytes(v) },
+            { key: "uploaded_at", label: "Uploaded", width: "160px", sortable: true, format: (v) => dateTime(v) },
+            { key: "sha256", label: "SHA-256", width: "minmax(240px, 1.5fr)", wrap: true, render: (r) => html`<span class="hash">${r.sha256}</span>` },
+            { key: "actions", label: "Download", width: "110px", align: "center",
+              render: (r) => html`<button type="button" class="btn btn--secondary btn--xs" data-dl-input="${r.input_id}">${icon("download", { size: "sm" })}Download</button>` },
+          ],
+        });
+      } catch (err) {
+        render(inputsSlot, html`<div class="pad callout callout--danger small">Failed to load inputs: ${err.message}</div>`);
+      }
+    }
+
+    async function loadOutputs() {
+      render(outputsSlot, html`<div class="pad muted small">${icon("refresh", { className: "spin", size: "sm" })} Loading exports…</div>`);
+      try {
+        const res = await ctx.api.get("outputs");
+        const items = res.outputs || [];
+        if (!items.length) {
+          render(outputsSlot, html`<div class="pad muted small">No exports generated yet. Generate reports from the Export menu to see their history and downloads here.</div>`);
+          return;
+        }
+        createDataGrid(outputsSlot, {
+          ariaLabel: "Case exported reports",
+          rowKey: "output_id",
+          rows: items,
+          height: "auto",
+          rowHeight: 52,
+          columns: [
+            { key: "filename", label: "Report name", width: "minmax(220px, 2fr)", sortable: true,
+              render: (r) => html`<span class="strong truncate" title="${r.filename}">${r.filename}</span><span class="dg__sub badge badge--info xsmall">${r.output_type}</span>` },
+            { key: "file_size_bytes", label: "Size", width: "100px", align: "right", sortable: true, format: (v) => bytes(v) },
+            { key: "created_at", label: "Generated at", width: "160px", sortable: true, format: (v) => dateTime(v) },
+            { key: "sha256", label: "SHA-256", width: "minmax(240px, 1.5fr)", wrap: true, render: (r) => html`<span class="hash">${r.sha256}</span>` },
+            { key: "actions", label: "Download", width: "110px", align: "center",
+              render: (r) => html`<button type="button" class="btn btn--secondary btn--xs" data-dl-output="${r.output_id}">${icon("download", { size: "sm" })}Download</button>` },
+          ],
+        });
+      } catch (err) {
+        render(outputsSlot, html`<div class="pad callout callout--danger small">Failed to load exports: ${err.message}</div>`);
+      }
+    }
+
+    panel.addEventListener("click", async (e) => {
+      const btnIn = e.target.closest("[data-dl-input]");
+      if (btnIn) {
+        const id = btnIn.getAttribute("data-dl-input");
+        try {
+          await ctx.api.download(`inputs/${id}/download`, "document");
+          toast.success("Document downloaded.");
+        } catch (err) {
+          toast.error(err, { title: "Download failed" });
+        }
+        return;
+      }
+      const btnOut = e.target.closest("[data-dl-output]");
+      if (btnOut) {
+        const id = btnOut.getAttribute("data-dl-output");
+        try {
+          await ctx.api.download(`outputs/${id}/download`, "report");
+          toast.success("Report downloaded.");
+        } catch (err) {
+          toast.error(err, { title: "Download failed" });
+        }
+      }
+    });
+
+    loadInputs();
+    loadOutputs();
+  }
+
   // ===================================================================================== data sync
   const syncFromCase = (d) => {
     if (!d || !ctx.isCurrent()) return;
@@ -1995,13 +2176,14 @@ export async function mount(el, ctx) {
     { id: "ingest.run", title: "Ingest queued files", group: "Ingest", icon: "play", when: () => !running && queue.some((q) => SENDABLE.has(q.status)), run: () => runIngest() },
     { id: "ingest.statements", title: "Show statements & custody hashes", group: "Ingest", icon: "hash", run: () => tabs.select("statements", { focus: true }) },
     { id: "ingest.draw", title: "Open PDF draw tool", group: "Ingest", icon: "table", keywords: ["template", "layout", "calibrate"], run: () => tabs.select("draw", { focus: true }) },
+    { id: "ingest.artifacts", title: "View stored files & exports", group: "Ingest", icon: "folder", keywords: ["files", "documents", "exports", "reports"], run: () => tabs.select("artifacts", { focus: true }) },
     { id: "ingest.agents", title: "Run AI backup agents (S2–S4)", group: "Ingest", icon: "cpu",
       run: () => { tabs.select("upload"); runAgents(up?.panel.querySelector('[data-action="run-agents"]')); } },
   ]);
 
   return {
     update(params) {
-      const t = ["upload", "statements", "draw"].includes(params.tab) ? params.tab : "upload";
+      const t = ["upload", "statements", "draw", "artifacts"].includes(params.tab) ? params.tab : "upload";
       if (t !== tabs.selected) tabs.select(t);
     },
   };

@@ -36,7 +36,7 @@ from cyphersol.service import CypherApplicationService  # noqa: E402
 UI_DIR = os.path.join(SRC_DIR, "cyphersol", "ui")
 JS_DIR = os.path.join(UI_DIR, "js")
 VIEWS = os.path.join(JS_DIR, "views")
-SCRATCH_DIR = "/private/tmp/claude-501/cyphersol-p1"
+SCRATCH_DIR = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")
 ENV_KEYS = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CYPHERSOL_ALLOW_CLOUD_LLM",
             "CYPHERSOL_EXECUTION_MODE", "CYPHERSOL_TALLY_HOSTS", "CYPHERSOL_LLM_PROVIDER")
 TRACE_CASE = "CASE_TRACE_EOW_041"

@@ -142,12 +142,24 @@ def _describe_cloud_status(db_path: str) -> str:
 
 
 def main() -> None:
+    data_dir_default = os.environ.get("CYPHERSOL_DATA_DIR", "data")
+    default_host = os.environ.get("HOST", "127.0.0.1")
+    try:
+        default_port = int(os.environ.get("PORT", "8080"))
+    except ValueError:
+        default_port = 8080
+    default_db = os.environ.get("CYPHERSOL_DB_PATH", os.path.join(data_dir_default, "cyphersol_vault.db"))
+    default_no_browser = (
+        os.environ.get("CYPHERSOL_NO_BROWSER", os.environ.get("HEADLESS", "0")).lower() in ("1", "true", "yes")
+        or ("PORT" in os.environ and "HOST" in os.environ)
+    )
+
     parser = argparse.ArgumentParser(
         description="CypherSOL — Offline & Hybrid LLM Bank Statement Analyzer (CypherEdge) & Fund Trail Intelligence (CypherTrace)"
     )
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
-    parser.add_argument("--db", default="data/cyphersol_vault.db", help="Path to local SQLite vault")
+    parser.add_argument("--host", default=default_host, help=f"Bind host (default: {default_host})")
+    parser.add_argument("--port", type=int, default=default_port, help=f"HTTP port (default: {default_port})")
+    parser.add_argument("--db", default=default_db, help=f"Path to local SQLite vault (default: {default_db})")
     parser.add_argument("--samples", default="sample_statements", help="Directory for sample statements")
     parser.add_argument(
         "--open-browser",
@@ -158,7 +170,7 @@ def main() -> None:
     parser.add_argument(
         "--no-browser",
         action="store_true",
-        default=False,
+        default=default_no_browser,
         help="Do not automatically open the web browser on startup (for headless/service mode)",
     )
     parser.add_argument(
@@ -191,6 +203,21 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    # Set up persistent rotating file logging in data volume (logs/cyphersol.log)
+    db_dir = os.path.dirname(os.path.abspath(args.db))
+    logs_dir = os.path.join(db_dir, "logs")
+    try:
+        os.makedirs(logs_dir, exist_ok=True)
+        log_file = os.path.join(logs_dir, "cyphersol.log")
+        from logging.handlers import RotatingFileHandler
+        root_logger = logging.getLogger()
+        if not any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers):
+            rfh = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+            rfh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+            root_logger.addHandler(rfh)
+    except Exception as _e:
+        logging.getLogger("cyphersol.cli").debug("Could not attach file logger: %s", _e)
 
     should_open_browser = not args.no_browser
     os.makedirs(os.path.dirname(os.path.abspath(args.db)), exist_ok=True)

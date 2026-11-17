@@ -22,7 +22,9 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import mimetypes
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -195,9 +197,13 @@ class CypherVault:
         self.db_path = db_path
         abs_path = os.path.abspath(db_path)
         db_dir = os.path.dirname(abs_path)
+        self.data_dir = db_dir
+        self.cases_dir = os.path.join(self.data_dir, "cases")
         if not os.path.isdir(db_dir):
             os.makedirs(db_dir, exist_ok=True)
             self._chmod(db_dir, 0o700)
+        os.makedirs(self.cases_dir, exist_ok=True)
+        self._chmod(self.cases_dir, 0o700)
         created_file = not os.path.exists(abs_path)
         self._lock = threading.RLock()
         self._key = os.environ.get(DB_KEY_ENV) or None
@@ -466,6 +472,31 @@ class CypherVault:
                     PRIMARY KEY(case_id, setting_key)
                 );
 
+                CREATE TABLE IF NOT EXISTS case_inputs (
+                    input_id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    file_size_bytes INTEGER NOT NULL,
+                    content_type TEXT,
+                    stored_path TEXT NOT NULL,
+                    uploaded_at TEXT NOT NULL,
+                    statement_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS case_outputs (
+                    output_id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    output_type TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    file_size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    stored_path TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_stmt_case ON statements(case_id);
                 CREATE INDEX IF NOT EXISTS idx_tx_case_stmt ON transactions(case_id, statement_id, row_index);
                 CREATE INDEX IF NOT EXISTS idx_entdec_case ON entity_decisions(case_id, seq);
@@ -480,6 +511,9 @@ class CypherVault:
                 CREATE INDEX IF NOT EXISTS idx_prov_stmt ON statement_provenance(statement_id);
                 CREATE INDEX IF NOT EXISTS idx_prov_case ON statement_provenance(case_id, ingested_at);
                 CREATE INDEX IF NOT EXISTS idx_ingest_case ON ingest_file_results(case_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_case_inputs_case ON case_inputs(case_id, uploaded_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_case_inputs_sha ON case_inputs(case_id, sha256);
+                CREATE INDEX IF NOT EXISTS idx_case_outputs_case ON case_outputs(case_id, created_at DESC);
                 """
             )
             self._migrate(conn)
@@ -630,6 +664,42 @@ class CypherVault:
                  "unknown (ingested before provenance tracking)", "unknown", s["ingested_at"] or _utc_now(),
                  json.dumps({"backfilled": True, "backfilled_at": _utc_now()})),
             )
+
+        # case_inputs and case_outputs tables for persistent evidence and exports
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS case_inputs (
+                input_id TEXT PRIMARY KEY,
+                case_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                content_type TEXT,
+                stored_path TEXT NOT NULL,
+                uploaded_at TEXT NOT NULL,
+                statement_id TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS case_outputs (
+                output_id TEXT PRIMARY KEY,
+                case_id TEXT NOT NULL,
+                output_type TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                stored_path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_case_inputs_case ON case_inputs(case_id, uploaded_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_case_inputs_sha ON case_inputs(case_id, sha256)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_case_outputs_case ON case_outputs(case_id, created_at DESC)")
 
     # ------------------------------------------------------------------------------------------ revisions
     @staticmethod
@@ -1683,3 +1753,264 @@ class CypherVault:
                 return parsed if isinstance(parsed, dict) else {}
             except json.JSONDecodeError:
                 return {}
+
+    # ------------------------------------------------------------------------------------------ inputs (raw documents)
+    def save_case_input(
+        self,
+        case_id: str,
+        filename: str,
+        content: bytes,
+        statement_id: Optional[str] = None,
+        content_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Atomically persist raw input file bytes to disk and record custody metadata."""
+        if not case_id or not filename:
+            raise ValueError("case_id and filename are required")
+        sha256 = hashlib.sha256(content).hexdigest()
+        size_bytes = len(content)
+        input_id = str(uuid.uuid4())
+        now = _utc_now()
+
+        if not content_type:
+            ext = os.path.splitext(filename)[1].lower()
+            ct_map = {
+                ".pdf": "application/pdf",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".xls": "application/vnd.ms-excel",
+                ".csv": "text/csv",
+                ".txt": "text/plain",
+                ".json": "application/json",
+            }
+            content_type = ct_map.get(ext) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+        inputs_dir = os.path.join(self.cases_dir, case_id, "inputs")
+        os.makedirs(inputs_dir, exist_ok=True)
+        self._chmod(inputs_dir, 0o700)
+
+        clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(filename))
+        disk_filename = f"{sha256[:12]}_{clean_name}"
+        stored_path = os.path.join(inputs_dir, disk_filename)
+
+        tmp_path = stored_path + ".tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+        self._chmod(tmp_path, 0o600)
+        os.replace(tmp_path, stored_path)
+
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+        with self._lock, self._connect(write=True) as conn:
+            conn.execute(
+                """
+                INSERT INTO case_inputs (input_id, case_id, filename, sha256, file_size_bytes, content_type, stored_path, uploaded_at, statement_id, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(input_id) DO UPDATE SET
+                    filename = excluded.filename,
+                    file_size_bytes = excluded.file_size_bytes,
+                    stored_path = excluded.stored_path,
+                    metadata_json = excluded.metadata_json
+                """,
+                (input_id, case_id, os.path.basename(filename), sha256, size_bytes, content_type, stored_path, now, statement_id, meta_json),
+            )
+            self._bump_revision(conn, [case_id])
+        return {
+            "input_id": input_id,
+            "case_id": case_id,
+            "filename": os.path.basename(filename),
+            "sha256": sha256,
+            "file_size_bytes": size_bytes,
+            "content_type": content_type,
+            "uploaded_at": now,
+            "statement_id": statement_id,
+            "metadata": metadata or {},
+        }
+
+    def get_case_inputs(self, case_id: str) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT input_id, case_id, filename, sha256, file_size_bytes, content_type, stored_path, uploaded_at, statement_id, metadata_json
+                FROM case_inputs
+                WHERE case_id = ?
+                ORDER BY uploaded_at DESC, rowid DESC
+                """,
+                (case_id,),
+            ).fetchall()
+            results = []
+            for r in rows:
+                meta = {}
+                try:
+                    meta = json.loads(r["metadata_json"] if isinstance(r, sqlite3.Row) else r[9] or "{}")
+                except Exception:
+                    pass
+                results.append({
+                    "input_id": r["input_id"] if isinstance(r, sqlite3.Row) else r[0],
+                    "case_id": r["case_id"] if isinstance(r, sqlite3.Row) else r[1],
+                    "filename": r["filename"] if isinstance(r, sqlite3.Row) else r[2],
+                    "sha256": r["sha256"] if isinstance(r, sqlite3.Row) else r[3],
+                    "file_size_bytes": r["file_size_bytes"] if isinstance(r, sqlite3.Row) else r[4],
+                    "content_type": r["content_type"] if isinstance(r, sqlite3.Row) else r[5],
+                    "uploaded_at": r["uploaded_at"] if isinstance(r, sqlite3.Row) else r[7],
+                    "statement_id": r["statement_id"] if isinstance(r, sqlite3.Row) else r[8],
+                    "metadata": meta,
+                })
+            return results
+
+    def get_case_input_file(self, case_id: str, identifier: str) -> Optional[Tuple[str, str, bytes]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT filename, content_type, stored_path, sha256
+                FROM case_inputs
+                WHERE case_id = ? AND (input_id = ? OR sha256 = ? OR sha256 LIKE ?)
+                ORDER BY uploaded_at DESC LIMIT 1
+                """,
+                (case_id, identifier, identifier, f"{identifier}%"),
+            ).fetchone()
+            if not row:
+                return None
+            fname = row["filename"] if isinstance(row, sqlite3.Row) else row[0]
+            ctype = row["content_type"] if isinstance(row, sqlite3.Row) else row[1]
+            path = row["stored_path"] if isinstance(row, sqlite3.Row) else row[2]
+            if not os.path.exists(path):
+                return None
+            with open(path, "rb") as f:
+                data = f.read()
+            return fname, ctype or "application/octet-stream", data
+
+    # ------------------------------------------------------------------------------------------ outputs (exports/reports)
+    def save_case_output(
+        self,
+        case_id: str,
+        output_type: str,
+        filename: str,
+        content: bytes,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Atomically persist generated output report/export bytes to disk and record metadata."""
+        if not case_id or not filename:
+            raise ValueError("case_id and filename are required")
+        sha256 = hashlib.sha256(content).hexdigest()
+        size_bytes = len(content)
+        output_id = str(uuid.uuid4())
+        now = _utc_now()
+        ts_slug = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+        ext = os.path.splitext(filename)[1].lower()
+        ct_map = {
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xls": "application/vnd.ms-excel",
+            ".xml": "application/xml; charset=utf-8",
+            ".html": "text/html; charset=utf-8",
+            ".pdf": "application/pdf",
+            ".json": "application/json",
+            ".csv": "text/csv",
+        }
+        content_type = ct_map.get(ext) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+        outputs_dir = os.path.join(self.cases_dir, case_id, "outputs")
+        os.makedirs(outputs_dir, exist_ok=True)
+        self._chmod(outputs_dir, 0o700)
+
+        clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", os.path.basename(filename))
+        disk_filename = f"{ts_slug}_{output_type}_{clean_name}"
+        stored_path = os.path.join(outputs_dir, disk_filename)
+
+        tmp_path = stored_path + ".tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+        self._chmod(tmp_path, 0o600)
+        os.replace(tmp_path, stored_path)
+
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+        with self._lock, self._connect(write=True) as conn:
+            conn.execute(
+                """
+                INSERT INTO case_outputs (output_id, case_id, output_type, filename, file_size_bytes, sha256, stored_path, created_at, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (output_id, case_id, output_type, os.path.basename(filename), size_bytes, sha256, stored_path, now, meta_json),
+            )
+            self._bump_revision(conn, [case_id])
+        return {
+            "output_id": output_id,
+            "case_id": case_id,
+            "output_type": output_type,
+            "filename": os.path.basename(filename),
+            "file_size_bytes": size_bytes,
+            "sha256": sha256,
+            "content_type": content_type,
+            "created_at": now,
+            "metadata": metadata or {},
+        }
+
+    def get_case_outputs(self, case_id: str) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT output_id, case_id, output_type, filename, file_size_bytes, sha256, stored_path, created_at, metadata_json
+                FROM case_outputs
+                WHERE case_id = ?
+                ORDER BY created_at DESC, rowid DESC
+                """,
+                (case_id,),
+            ).fetchall()
+            results = []
+            for r in rows:
+                meta = {}
+                try:
+                    meta = json.loads(r["metadata_json"] if isinstance(r, sqlite3.Row) else r[8] or "{}")
+                except Exception:
+                    pass
+                fname = r["filename"] if isinstance(r, sqlite3.Row) else r[3]
+                ext = os.path.splitext(fname)[1].lower()
+                ct_map = {
+                    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    ".xml": "application/xml; charset=utf-8",
+                    ".html": "text/html; charset=utf-8",
+                    ".pdf": "application/pdf",
+                    ".json": "application/json",
+                    ".csv": "text/csv",
+                }
+                results.append({
+                    "output_id": r["output_id"] if isinstance(r, sqlite3.Row) else r[0],
+                    "case_id": r["case_id"] if isinstance(r, sqlite3.Row) else r[1],
+                    "output_type": r["output_type"] if isinstance(r, sqlite3.Row) else r[2],
+                    "filename": fname,
+                    "file_size_bytes": r["file_size_bytes"] if isinstance(r, sqlite3.Row) else r[4],
+                    "sha256": r["sha256"] if isinstance(r, sqlite3.Row) else r[5],
+                    "content_type": ct_map.get(ext, "application/octet-stream"),
+                    "created_at": r["created_at"] if isinstance(r, sqlite3.Row) else r[7],
+                    "metadata": meta,
+                })
+            return results
+
+    def get_case_output_file(self, case_id: str, identifier: str) -> Optional[Tuple[str, str, bytes]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT filename, stored_path, sha256
+                FROM case_outputs
+                WHERE case_id = ? AND (output_id = ? OR filename = ?)
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (case_id, identifier, identifier),
+            ).fetchone()
+            if not row:
+                return None
+            fname = row["filename"] if isinstance(row, sqlite3.Row) else row[0]
+            path = row["stored_path"] if isinstance(row, sqlite3.Row) else row[1]
+            if not os.path.exists(path):
+                return None
+            ext = os.path.splitext(fname)[1].lower()
+            ct_map = {
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".xml": "application/xml; charset=utf-8",
+                ".html": "text/html; charset=utf-8",
+                ".pdf": "application/pdf",
+                ".json": "application/json",
+                ".csv": "text/csv",
+            }
+            with open(path, "rb") as f:
+                data = f.read()
+            return fname, ct_map.get(ext, "application/octet-stream"), data

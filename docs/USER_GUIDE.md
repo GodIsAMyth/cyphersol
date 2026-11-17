@@ -59,6 +59,22 @@ On first run, the launcher initializes `.venv` automatically if needed, starts t
    ```
    Your default browser opens automatically to **`http://127.0.0.1:8080/`**.
 
+### Option C — Container & Cloud Deployments (Docker, Render, Google Cloud, AWS, Azure)
+
+For team collaboration or centralized cloud hosting, CypherSOL supports five production container targets with persistent volume storage (`/data`):
+
+1. **Docker / Docker Compose (Local or VM):**
+   ```bash
+   docker compose up -d
+   ```
+   Opens at `http://localhost:8080` with data persisted to `./data:/data`.
+2. **Render (One-Click Blueprint):** Connect GitHub repo, Render detects `render.yaml`, spins up container with 10GB persistent disk at `/data`.
+3. **Google Cloud Run:** Run `./deploy/google-cloud-run/deploy.sh` to deploy with Google Cloud Storage bucket volume mount.
+4. **AWS (ECS Fargate / App Runner):** Deploy via `deploy/aws/ecs-task-definition.json` with Amazon EFS persistent storage mount.
+5. **Azure Container Apps:** Run `./deploy/azure/deploy-container-app.sh` with Azure Files SMB share volume mount.
+
+*See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for full configuration, environment variables, and security settings.*
+
 ### Custom Port, Separate Client Database, or Headless Start
 
 Pass any optional flags directly to `./start.sh`, `Start_CypherSOL.bat`, or `python3 run_app.py`:
@@ -151,7 +167,27 @@ On first launch against a new database, CypherSOL creates two complete demo work
    - **PDF Password:** Enter DOB/PAN if uploading encrypted bank statements (requires optional `pikepdf` accelerator).
    - **Draw Template Override:** Leave on `Auto-Detect (113 Bank Templates)` for standard PDFs/CSVs/XLSXs, or choose a custom template saved with the Draw Tool.
 4. Click **`Ingest & Analyze Statements`**.
-5. Verify ingestion in the **`Ingested Statements & SHA-256 Chain of Custody`** table on the right: check detected Bank & A/C, Transaction count, Anomalies count, and the immutable **SHA-256** digest calculated on the raw uploaded bytes.
+5. Verify ingestion in the **`Ingested Statements & SHA-256 Chain of Custody`** table on the right: check detected Bank & A/C, Transaction count, Anomalies count, and the immutable **SHA-256** digest calculated on the raw uploaded bytes. Use the **Download file** icon in the table or inside the Statement Provenance drawer to re-download the exact uploaded file.
+
+### Persistent Case Files & Export Archive ("Files & exports" Tab)
+
+Every file uploaded to CypherSOL and every report generated is permanently preserved in the case storage vault (`data/cases/{case_id}/`). Open the **`Files & exports`** sub-tab in Tab **`01 Upload & Ingest`** (or select **"View Stored Files & Exports…"** from the top Export dropdown) to access:
+
+1. **Original Input Documents Datagrid:**
+   - **Document Name & Size:** Shows the original filename and exact file size.
+   - **SHA-256 Cryptographic Hash:** Computed at upload time for evidentiary integrity and Section 63 BSA / 65B compliance.
+   - **Linked Statement:** Displays the detected bank statement or account ID.
+   - **1-Click Download (`Download file`):** Instantly downloads the original raw file from the server with proper MIME type.
+   - **`+ Upload Document` Button:** Allows investigators and CAs to attach supplementary case documentation (e.g., audit notes, FIR copies, KYC scans, or external JSON evidence) directly to the case vault.
+
+2. **Generated Exports & Reports Datagrid:**
+   - **Export History:** Every generated Excel workbook (`.xlsx`), Tally XML (`.xml`), Forensic Dossier (`.pdf`/`.html`), and ITR compliance report is automatically archived with a timestamped snapshot.
+   - **Type Badge:** Visual badge distinguishing `audit_workbook`, `tally_xml`, `forensic_dossier_pdf`, `forensic_dossier_html`, and `itr_compliance`.
+   - **Cryptographic Hash & Timestamp:** Complete provenance of when each export was produced.
+   - **1-Click Download:** Re-download any previously generated report without re-running the export pipeline.
+
+3. **Rotating Audit Log Storage:**
+   - System and analysis logs are kept in `data/logs/cyphersol.log` with automatic 10MB x 5 backups rotation. System logs are kept purely in file storage to protect forensic privacy and prevent token leakage in the web UI.
 
 ### Using the Interactive PDF Draw Tool (When Auto-Detect Misaligns Columns)
 

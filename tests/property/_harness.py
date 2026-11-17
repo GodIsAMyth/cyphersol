@@ -24,7 +24,7 @@ from cyphersol.models import BankAccountStatement, NormalizedTransaction, Resolv
 
 import tempfile
 
-_P1_SCRATCH = "/private/tmp/claude-501/cyphersol-p1"
+_P1_SCRATCH = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")
 SCRATCH_DIR = os.path.join(_P1_SCRATCH if os.path.isdir(_P1_SCRATCH) else tempfile.gettempdir(), "property")
 
 try:  # optional dependency (requirements.txt "# optional")

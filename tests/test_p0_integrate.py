@@ -96,7 +96,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self._env = mock.patch.dict(os.environ, _clean_env(), clear=True)
         self._env.start()
-        self.tmp = tempfile.TemporaryDirectory(dir="/private/tmp/claude-501/cyphersol-p0")
+        self.tmp = tempfile.TemporaryDirectory(dir=os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p0"))
         self.db = os.path.join(self.tmp.name, "vault.db")
         self.transport = _Transport()
         self.svc = CypherApplicationService(self.db, self.tmp.name, seed_demo=False, llm_transport_fn=self.transport)
@@ -110,7 +110,7 @@ class _Base(unittest.TestCase):
         return [r["action"] for r in self.svc.vault.get_audit_logs(case_id or self.cid, limit=1000)]
 
 
-os.makedirs("/private/tmp/claude-501/cyphersol-p0", exist_ok=True)
+os.makedirs(os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p0"), exist_ok=True)
 
 
 # ---------------------------------------------------------------------------------------------------------

@@ -58,7 +58,7 @@ SAMPLES_DIR = os.path.join(ROOT_DIR, "sample_statements")
 FIXTURES = os.path.join(ROOT_DIR, "tests", "fixtures")
 PDF_CORPUS = os.path.join(FIXTURES, "pdf_corpus")
 UI_DIR = os.path.join(SRC_DIR, "cyphersol", "ui")
-_P1_SCRATCH = "/private/tmp/claude-501/cyphersol-p1"
+_P1_SCRATCH = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")
 SCRATCH_DIR = os.path.join(_P1_SCRATCH if os.path.isdir(_P1_SCRATCH) else tempfile.gettempdir(), "program")
 ENV_KEYS = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CYPHERSOL_ALLOW_CLOUD_LLM",
             "CYPHERSOL_EXECUTION_MODE", "CYPHERSOL_TALLY_HOSTS", "CYPHERSOL_LLM_PROVIDER")

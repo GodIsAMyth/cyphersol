@@ -230,6 +230,8 @@ function renderTopbarActions() {
       return [
         { group: `Export · ${caseModeLabel(mode)}` },
         ...EXPORTS.filter((x) => x.modes.includes(mode)).map((x) => ({ id: x.id, label: x.label, description: x.desc, icon: "download", run: () => runExport(x.id) })),
+        { separator: true },
+        { id: "view_artifacts", label: "View Stored Files & Exports…", description: "Download raw documents or exported reports", icon: "folder", run: () => router.navigate("ingest", null, { caseId, tab: "artifacts" }) },
       ];
     },
   });

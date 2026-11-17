@@ -1,0 +1,27 @@
+# CypherSOL Wiki
+
+- **[Home](Home)**
+- **[User Guide](User-Guide)**
+  - [Starting the App](User-Guide#1-how-to-start-open-and-stop-the-application)
+  - [Interface & Controls](User-Guide#2-understanding-the-workspace-interface--global-controls)
+  - [Bulk Upload & Draw Tool](User-Guide#4-step-01--multi-format-bulk-upload--interactive-pdf-draw-tool)
+  - [Files & Exports Repository](User-Guide#persistent-case-files--export-archive-files--exports-tab)
+  - [Anomaly Gate](User-Guide#5-step-02--automatic-anomaly-gate)
+  - [52-Category Taxonomy](User-Guide#6-step-03--ai-categorized-transactions--52-category-taxonomy)
+  - [CypherEdge (Tally / ITR)](User-Guide#8-step-05a--cypheredge-guide-tally-xml-itr-compliance-loan-eligibility)
+  - [CypherTrace (Forensic)](User-Guide#9-step-05b--cyphertrace-forensic-guide)
+  - [Profiles & Dossiers](User-Guide#10-step-06--individual-financial-profiles-audit-trail--courtroom-exports)
+- **[Deployment Guide](Deployment-Guide)**
+  - [Storage Layout](Deployment-Guide#1-storage-architecture-inputs-outputs--logs)
+  - [Docker & Compose](Deployment-Guide#option-a-local--vm-docker--docker-compose)
+  - [Render Deployment](Deployment-Guide#option-b-render-one-click-blueprint)
+  - [Google Cloud Run](Deployment-Guide#option-c-google-cloud-cloud-run)
+  - [AWS ECS & App Runner](Deployment-Guide#option-d-aws-ecs-fargate-or-app-runner)
+  - [Azure Container Apps](Deployment-Guide#option-e-azure-container-apps)
+  - [Environment Variables](Deployment-Guide#4-environment-variables-reference)
+- **[Developer & Architecture Guide](Developer-and-Architecture-Guide)**
+  - [Package Topology](Developer-and-Architecture-Guide#1-architectural-principles--layered-package-topology)
+  - [Execution Flows](Developer-and-Architecture-Guide#2-core-execution-flows-sequence-diagrams)
+  - [Storage & Chain of Custody](Developer-and-Architecture-Guide#37-persistent-storage-architecture--chain-of-custody-repository)
+  - [Maintenance Playbooks](Developer-and-Architecture-Guide#4-maintenance--extension-playbooks)
+- **[Data & Variable Dictionary](Data-and-Variable-Dictionary)**
