@@ -35,7 +35,7 @@ INGEST_JS = os.path.join(UI_DIR, "js", "views", "ingest.js")
 SETTINGS_JS = os.path.join(UI_DIR, "js", "views", "settings.js")
 LEDGER_JS = os.path.join(UI_DIR, "js", "views", "settings-ledger.js")
 CASES_CSS = os.path.join(UI_DIR, "styles", "views", "cases.css")
-SCRATCH_DIR = "/private/tmp/claude-501/cyphersol-p1"
+SCRATCH_DIR = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")
 ENV_KEYS = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CYPHERSOL_ALLOW_CLOUD_LLM",
             "CYPHERSOL_EXECUTION_MODE", "CYPHERSOL_TALLY_HOSTS", "CYPHERSOL_LLM_PROVIDER")
 

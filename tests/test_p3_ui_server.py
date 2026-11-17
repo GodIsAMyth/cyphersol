@@ -24,7 +24,7 @@ from cyphersol.server import CONTENT_SECURITY_POLICY, create_http_handler  # noq
 from cyphersol.service import CypherApplicationService  # noqa: E402
 
 UI_DIR = os.path.join(SRC_DIR, "cyphersol", "ui")
-SCRATCH_DIR = "/private/tmp/claude-501/cyphersol-p3"
+SCRATCH_DIR = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p3")
 ENV_KEYS = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CYPHERSOL_ALLOW_CLOUD_LLM",
             "CYPHERSOL_EXECUTION_MODE", "CYPHERSOL_TALLY_HOSTS", "CYPHERSOL_LLM_PROVIDER")
 EDGE_CASE = "CASE_EDGE_BALAJI_FY25"

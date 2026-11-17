@@ -50,7 +50,7 @@ from test_p0_pdf import HAS_POPPLER, _image_object, _statement_page, build_pdf, 
 from test_p0_security import _FakeClient, _stmt, _tx  # noqa: E402
 from test_p0_trace import Fixture, _find  # noqa: E402
 
-SCRATCH = "/private/tmp/claude-501/cyphersol-p0"
+SCRATCH = os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p0")
 os.makedirs(SCRATCH, exist_ok=True)
 
 

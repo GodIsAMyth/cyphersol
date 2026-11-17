@@ -360,8 +360,8 @@ class SampleCaseRegressionTests(unittest.TestCase):
         import tempfile
         from cyphersol.service import CypherApplicationService
 
-        tmp = tempfile.mkdtemp(prefix="p1risk_", dir="/private/tmp/claude-501/cyphersol-p1") if os.path.isdir(
-            "/private/tmp/claude-501/cyphersol-p1") else tempfile.mkdtemp()
+        tmp = tempfile.mkdtemp(prefix="p1risk_", dir=os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")) if os.path.isdir(
+            os.path.join(tempfile.gettempdir(), "claude-501", "cyphersol-p1")) else tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, True)
         # Seed from a copy: demo seeding regenerates sample files, which must not rewrite the repo's sample_statements.
         samples = os.path.join(tmp, "sample_statements")
