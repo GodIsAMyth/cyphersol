@@ -295,6 +295,7 @@ _REF_AT_RE = re.compile(rb"(\d+)\s+(\d+)\s+R\b")
 _INT_AT_RE = re.compile(rb"[+-]?\d+")
 _SCALAR_AT_RE = re.compile(rb"/?[^\s/<>\[\]()%{}]+")
 _NUMBER_RE = re.compile(rb"[+-]?(?:\d+\.?\d*|\.\d+)")
+_NUMBER_RUN_RE = re.compile(rb"(?:[+-]?(?:\d+\.?\d*|\.\d+))(?:[+-](?:\d+\.?\d*|\.\d+))+")
 _NAME_ITEM_RE = re.compile(rb"/([^\s/<>\[\]()%{}]+)")
 _DICT_DELIM_RE = re.compile(rb"<<|>>|\(|\)|\\.")
 _BRACKET_DELIM_RE = re.compile(rb"\[|\]|\(|\)|\\.")
@@ -715,6 +716,11 @@ def _lex_content(data: bytes) -> Iterator[Tuple[str, List[Any]]]:
                     push(float(tok))
                 except ValueError:
                     push(0.0)
+            elif _NUMBER_RUN_RE.fullmatch(tok):
+                # Numbers written without a separator ("-12-4000" in a kerned TJ array): lenient readers
+                # (Poppler, pdf.js) split them at each sign; treating the run as an operator dropped the array.
+                for num in _NUMBER_RE.findall(tok):
+                    push(float(num))
             elif tok in (b"true", b"false", b"null"):
                 push(tok == b"true")
             else:

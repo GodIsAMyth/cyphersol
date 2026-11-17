@@ -436,6 +436,10 @@ class ScanDetectionAndOcrRoutingTests(unittest.TestCase):
         pop.assert_called()
         self.assertEqual(res.text_source, "poppler")
 
+    def test_lexer_splits_unseparated_numbers(self) -> None:
+        ops = list(pdf_parser._lex_content(b"BT [(D)-12-4000(a)] TJ ET"))
+        self.assertEqual(ops[1], ("TJ", [[("lit", b"D"), -12.0, -4000.0, ("lit", b"a")]]))
+
     def test_pdf04_kerned_tj_document_parses_without_poppler(self) -> None:
         def kern(word: str) -> str:
             return "".join(f"({c})-12" for c in word)
